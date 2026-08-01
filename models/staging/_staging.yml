@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: stg_pdm__dates
+    columns:
+      - name: snapshot_date
+        tests: [not_null, unique]
+      - name: month_end_date
+        tests: [not_null]
+
+  - name: stg_pdm__ytd_dates
+    description: >
+      YTD window for the reporting month. Exactly one row per run.
+    columns:
+      - name: ytd_end_dt
+        tests:
+          - not_null
+          - unique
+          - relationships:
+              description: >
+                Guards the two independent month-end computations described in
+                the model header. If this fails, cell 1 and cell 2 have drifted
+                onto different months and every downstream count is wrong.
+              arguments:
+                to: ref('stg_pdm__dates')
+                field: month_end_date
+      - name: ytd_begin_dt
+        tests: [not_null]
+      - name: ytd_end_dim_sqn
+        tests: [not_null]
+
+  - name: stg_crm__sf_account
+    columns:
+      - name: case_cl_id
+        tests: [not_null]
+
+  - name: stg_metrics__policy_owner
+    columns:
+      - name: po_client_id_nk
+        tests: [not_null]

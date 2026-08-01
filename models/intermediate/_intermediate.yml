@@ -1,0 +1,138 @@
+version: 2
+
+models:
+  - name: int_contracts__scoped
+    columns:
+      - name: cnt_id_nk
+        tests: [not_null]
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [cnt_id_nk, cnt_iss_cd_nk, plan_cd]
+
+  - name: int_owners__by_contract
+    description: One primary owner per contract account.
+    columns:
+      - name: cnt_acct_id_nk
+        tests: [not_null, unique]
+
+  - name: int_owners__by_invest_acct
+    description: One primary owner per investment account.
+    columns:
+      - name: cnt_acct_id_nk
+        tests: [not_null, unique]
+
+  - name: int_products__unified
+    description: >
+      Shared grain across the insurance and wealth branches. If this test
+      fails, a producer left join has fanned out -- fix the join, do not add
+      a distinct.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - cnt_id_nk
+              - cnt_iss_cd_nk
+              - plan_cd
+              - producer_id_nk
+    columns:
+      - name: lob_nm
+        tests: [not_null]
+      - name: cnt_id_nk
+        tests: [not_null]
+
+  - name: int_products__categorized
+    columns:
+      - name: product_type
+        description: >
+          Null means the plan_cd did not resolve to a row in
+          product_category_map. The mart filters these out, so this test is
+          the early warning that a new product has launched and nobody has
+          added it to the seed yet.
+        tests:
+          - not_null:
+              config:
+                severity: warn
+
+  - name: int_clients__active_eop
+    columns:
+      - name: po_client_id_nk
+        tests: [not_null, unique]
+
+  - name: int_planning__gm_clients
+    columns:
+      - name: client_id
+        tests: [not_null, unique]
+
+  - name: int_planning__fp_clients
+    columns:
+      - name: client_id
+        tests: [not_null, unique]
+
+  - name: int_clients__planning_flags
+    description: >
+      One row per client that has any completed plan, GM or fee-based.
+    columns:
+      - name: client_id
+        tests: [not_null, unique]
+      - name: completed_plan_dt
+        tests: [not_null]
+
+  - name: int_metrics__base_all
+    description: >
+      Mapping rows for the current snapshot, restricted to contracts effective
+      on or before the reporting month end.
+    columns:
+      - name: month_end_date
+        tests: [not_null]
+      - name: primry_ownr_cl_id
+        tests: [not_null]
+
+  - name: int_summ__active_clients
+    description: >
+      Clients holding at least one contract effective in the trailing 60 months.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [month_end_date, primry_ownr_cl_id]
+
+  - name: int_summ__sales
+    description: One row per month. YTD new business counts and penetration rates.
+    columns:
+      - name: month_end_date
+        tests: [not_null, unique]
+      - name: total_sales
+        description: Denominator for all three penetration rates.
+        tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+
+  - name: int_summ__client_breadth_depth
+    description: Breadth and depth per client per month.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [month_end_date, primry_ownr_cl_id]
+    columns:
+      - name: breadth_count
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+      - name: depth_count
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+
+  - name: int_summ__breadth_depth
+    columns:
+      - name: month_end_date
+        tests: [not_null, unique]
+      - name: denominator
+        tests: [not_null]

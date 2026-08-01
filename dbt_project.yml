@@ -1,0 +1,59 @@
+name: 'ppg'
+version: '1.0.0'
+config-version: 2
+
+profile: 'ppg'
+
+model-paths: ["models"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+macro-paths: ["macros"]
+
+vars:
+  # Set to a 'YYYY-MM-DD' string to backfill a specific day.
+  # Leave as 'current_date' for the normal daily run.
+  snapshot_date: 'current_date'
+
+  # The original query had every producer-role filter commented out.
+  # false  = reproduce current behaviour (all producer roles, fan-out possible)
+  # true   = keep only the role configured per LOB in seeds/lob_producer_role.csv
+  apply_producer_role_filter: false
+
+  # true  = a client with no planning record, or one whose plan completed after
+  #         the reporting month, gets 'N' flags
+  # false = reproduce the original NULLs
+  coalesce_planning_flags: true
+
+  # One-time fold-in of pre-migration history from ppg_metrics_dtl_hist.
+  # Leave false for normal runs; see ppg_metrics_monthly header.
+  include_historical_load: false
+  historical_load_from: null
+
+  # Product types that collapse to a single unit when computing depth in
+  # ppg_metrics_summ_monthly. These must be values emitted by
+  # seeds/product_category_map.csv; tests/assert_depth_collapse_types_exist.sql
+  # enforces that.
+  depth_collapse_product_types:
+    - 'Level Term and Level Convertible_Renewable Term'
+    - 'Yearly Convertible_Renewable Term'
+
+models:
+  ppg:
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: ephemeral
+      +schema: intermediate
+    marts:
+      +materialized: table
+      +schema: ppg
+
+seeds:
+  ppg:
+    +schema: seeds
+    product_category_map:
+      +column_types:
+        product_ln_cd: string
+        product_grp_nm: string
+        product_nm: string

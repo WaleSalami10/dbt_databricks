@@ -1,0 +1,191 @@
+version: 2
+
+models:
+  - name: ppg_stg_cnt_prd_mapping
+    description: >
+      One row per in-scope contract or investment account per snapshot date,
+      with product categorisation attached. Feeds ppg_metrics_dtl.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - snapshot_date
+              - cnt_id_nk
+              - cnt_iss_cd_nk
+              - producer_id_nk
+    columns:
+      - name: snapshot_date
+        tests: [not_null]
+      - name: cnt_id_nk
+        tests: [not_null]
+      - name: lob_nm
+        tests:
+          - accepted_values:
+              arguments:
+                values:
+                  - LIFE INSURANCE
+                  - ANNUITIES
+                  - LONG TERM CARE
+                  - IDI
+                  - EAGLE
+                  - NYLIFE SEC
+                  - MAINSTAY
+                  - NP MUTFNDS
+                  - NP529
+      - name: product_type
+        tests: [not_null]
+      - name: product_category_risk_wm
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Risk Management', 'Wealth Management']
+
+  - name: ppg_metrics_dtl
+    description: >
+      Contract-level detail for the reporting month, filtered to contracts whose
+      primary owner was an active policy owner at month end.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns:
+              - month_end_date
+              - cnt_id_nk
+              - cnt_iss_cd_nk
+              - producer_id_nk
+      - dbt_utils.expression_is_true:
+          description: >
+            risk_management_ind and wealth_management_ind are derived from the
+            same column and are mutually exclusive by construction. If both are
+            'N' a new value has appeared in product_category_risk_wm.
+          arguments:
+            expression: "not (risk_management_ind = 'N' and wealth_management_ind = 'N')"
+    columns:
+      - name: month_end_date
+        tests: [not_null]
+      - name: cnt_id_nk
+        tests: [not_null]
+      - name: primry_ownr_cl_id
+        tests: [not_null]
+      - name: gm_flag
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+      - name: fp_flag
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+      - name: gm_or_fp_flag
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+
+  - name: ppg_metrics_monthly
+    description: >
+      ppg_metrics_dtl reduced to contract-and-producer grain: cnt_iss_cd_nk and
+      producer_cnt_role_nm are dropped and the result deduplicated. Accumulates
+      one partition per reporting month. Feeds ppg_metrics_summ_monthly.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          description: >
+            Tighter than the dtl grain because two key columns were dropped. A
+            failure here means either one cnt_id_nk exists under two issue codes
+            with different cnt_eff_dt, or one contract carries several
+            producer_id_nk. Both are real modelling questions, not test noise.
+          arguments:
+            combination_of_columns:
+              - month_end_date
+              - cnt_id_nk
+              - producer_id_nk
+      - dbt_utils.equal_rowcount:
+          description: >
+            Monthly should never contain rows dtl does not. It may legitimately
+            contain FEWER after the dedup, so this is a warning, not an error.
+          arguments:
+            compare_model: ref('ppg_metrics_dtl')
+          config:
+            severity: warn
+    columns:
+      - name: month_end_date
+        tests: [not_null]
+      - name: cnt_id_nk
+        tests: [not_null]
+      - name: primry_ownr_cl_id
+        tests: [not_null]
+      - name: gm_or_fp_flag
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+
+  - name: ppg_metrics_summ_monthly
+    description: >
+      One row per reporting month: YTD sales penetration plus multi-product
+      breadth and depth. Reads ppg_metrics_dtl directly, not
+      ppg_metrics_monthly.
+    columns:
+      - name: month_end_date
+        tests: [not_null, unique]
+      - name: total_sales
+        tests: [not_null]
+      - name: plan_sales
+        description: >
+          Distinct clients with a GM or FP plan. Cannot exceed total_sales.
+        tests: [not_null]
+      - name: ppg_sales
+        description: Percentage, 0-100.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+      - name: gm_led_sales
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+      - name: fb_led_sales
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+      - name: multi_product_breadth
+        description: >
+          Mean distinct need-based categories per active client. Below 1.0 would
+          mean a client counted in the denominator contributed no categories.
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+              config:
+                severity: warn
+      - name: multi_product_depth
+        tests:
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 1
+                inclusive: true
+              config:
+                severity: warn
+    tests:
+      - dbt_utils.expression_is_true:
+          description: Plan sales is a subset of total sales.
+          arguments:
+            expression: "plan_sales <= total_sales"
+      - dbt_utils.expression_is_true:
+          description: >
+            Depth counts contracts, breadth counts categories. A client cannot
+            span more categories than they hold contracts, so depth >= breadth
+            at the aggregate level too.
+          arguments:
+            expression: "depth_val >= breadth_val"
+          config:
+            severity: warn
