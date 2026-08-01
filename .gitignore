@@ -1,3 +1,5 @@
 
 dbt_internal_packages/
 .env
+target/
+logs/
