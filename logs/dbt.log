@@ -17603,3 +17603,16 @@ where month_end_date is null
 Finished 'test' successfully for target 'dev' [20.7s]
 Processed: 17 models | 80 tests
 Summary: 97 total | 80 success | 17 no-op
+==================== 2026-08-01T18:40:23.251913Z | 019fbea0-96ca-74a1-bb4a-234c082388a4 ====================
+18:40:23.253489 [info ]: dbt-fusion 2.0.0-preview.202
+18:40:23.441812 [info ]:    Started resolving packages from packages.yml
+18:40:23.634206 [info ]:   Finished [  0.19s] resolving packages from packages.yml (2 items)
+18:40:23.634590 [info ]: Installing packages
+18:40:23.649124 [info ]: Installing dbt-labs/codegen
+18:40:23.649436 [info ]: Installing dbt-labs/dbt_utils
+18:40:23.896584 [info ]:  Installed dbt-labs/codegen: 0.14.1
+18:40:24.017614 [info ]:  Installed dbt-labs/dbt_utils: 1.4.1
+18:40:24.017861 [info ]:  Installed 2 packages
+18:40:24.070069 [info ]: 
+==================== Execution Summary =====================
+Finished 'deps' successfully [818ms]
