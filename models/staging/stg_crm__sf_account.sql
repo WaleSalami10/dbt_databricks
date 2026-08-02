@@ -3,9 +3,14 @@
 -- ON clause of an inner join, which is a WHERE in disguise. Made explicit here
 -- so it is applied once rather than in each of the three places the subquery
 -- was pasted.
+
+with sf_account as ( 
 select distinct
     acct_id_nk,
     case_cl_id
 from {{ source('crm', 'sf_account') }}
 where case_cl_id is not null
   and case_cl_id <> ''
+  )
+  
+select * from sf_account

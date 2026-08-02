@@ -1,3 +1,4 @@
+with primary_owner_derv as (
 select
     cnt_acct_id_nk,
     iss_cd_nk,
@@ -6,3 +7,5 @@ select
     rec_tp_cd
 from {{ source('pdm', 'fact_primary_owner_derv') }}
 where edh_record_status_in = 'A'
+)
+select * from primary_owner_derv
