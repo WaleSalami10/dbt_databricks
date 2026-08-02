@@ -3,6 +3,7 @@
 -- This is the contract between the insurance side and the wealth side. Any
 -- column added to one branch must be added to the other. Grain and tests are
 -- declared in _intermediate.yml -- test here, not only at the mart.
+with unified_products as (
 select
     lob_nm,
     plan_cd,
@@ -28,3 +29,5 @@ select
     producer_cnt_role_nm,
     'INVEST_ACCT' as source_domain
 from {{ ref('int_wm_accounts__with_producer') }}
+)
+select * from unified_products

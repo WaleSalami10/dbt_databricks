@@ -44,10 +44,9 @@ models:
       +schema: staging
     intermediate:
       +materialized: ephemeral
-      +schema: intermediate
     marts:
       +materialized: table
-      +schema: ppg
+      +schema: marts
 
 seeds:
   ppg:

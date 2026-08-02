@@ -1,3 +1,4 @@
+with contracts as (
 select
     cnt_id_nk,
     cnt_iss_cd_nk,
@@ -6,3 +7,5 @@ select
     cnt_eff_dt
 from {{ source('pdm', 'dim_contract') }}
 where edh_record_status_in = 'A'
+)
+select * from contracts

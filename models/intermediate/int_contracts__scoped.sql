@@ -1,5 +1,6 @@
 -- Original CTE: core_contracts
 -- Contracts in scope for PPG, with the IDI override applied to lob_nm.
+with scoped_contracts as (
 select distinct
     case
         when cnt_iss_cd_nk = 'IDI' then 'IDI'
@@ -12,3 +13,5 @@ select distinct
 from {{ ref('stg_pdm__contracts') }}
 where lob_nm in ('LIFE INSURANCE', 'ANNUITIES', 'LONG TERM CARE')
    or cnt_iss_cd_nk = 'IDI'
+)
+select * from scoped_contracts
