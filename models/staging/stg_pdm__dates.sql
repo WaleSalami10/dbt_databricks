@@ -10,7 +10,7 @@
 -- ppg_stg_cnt_prd_mapping write one partition per day, and made a rerun on a
 -- different day silently change an already-published month.
 --
--- The reporting month is now an explicit input, var('report_month'), and it
+-- The reporting month is now an explicit input, ppg_var('report_month'), and it
 -- accepts any day inside the target month. month_end_date is resolved from
 -- dim_date, so it is a real calendar date rather than an arithmetic guess.
 --

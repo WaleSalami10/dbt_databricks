@@ -5,11 +5,11 @@
 --
 -- DEPTH RULE: all term products collapse to a single unit. A client with five
 -- term policies and two whole life contracts has depth 3, not 7. The product
--- types that collapse are in var('depth_collapse_product_types') -- they are
+-- types that collapse are in ppg_var('depth_collapse_product_types') -- they are
 -- values produced by seeds/product_category_map.csv, and
 -- tests/assert_depth_collapse_types_exist.sql fails the build if the two ever
 -- drift apart.
-{% set term_types = var('depth_collapse_product_types') %}
+{% set term_types = ppg_var('depth_collapse_product_types') %}
 
 with dates as (
     select * from {{ ref('stg_pdm__ytd_dates') }}

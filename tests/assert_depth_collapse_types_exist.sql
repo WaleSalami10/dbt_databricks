@@ -5,7 +5,7 @@
 -- with term policies gets a higher depth, with no error anywhere.
 --
 -- This test fails if any configured value no longer exists in the seed.
-{% set term_types = var('depth_collapse_product_types') %}
+{% set term_types = ppg_var('depth_collapse_product_types') %}
 
 with expected as (
     {% for t in term_types %}

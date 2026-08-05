@@ -22,5 +22,8 @@ select
     product_nm,
     edh_record_status_in
 from {{ source('pdm', 'dim_product') }}
+-- Current version only: the source is Type 2, and snapshotting every version
+-- at once duplicates the unique_key. See snap_pdm__dim_contract.
+where edh_record_status_in = 'A'
 
 {% endsnapshot %}

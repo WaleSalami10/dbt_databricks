@@ -190,22 +190,105 @@ test. `tests/assert_backfill_is_honest.sql` now fails the build in exactly that
 case.
 
 **The same defect affects the normal run, at smaller scale.** In `current` mode
-a report built on 4 August for July reads 4 August's state: four days of new
+a report built on 5 August for July reads 5 August's state: five days of new
 business, lapses and producer reassignments leak into July. That is how the
 notebook always behaved, so `tests/assert_snapshot_is_month_end.sql` warns
 rather than fails — but it means a month rerun a week later gives a different
-answer. Any other mode reads the month end itself and is exact, which is why
-`time_travel` is worth turning on even if you never backfill.
+answer.
 
-### Step 1: find out what you have
+### Delta time travel is not available
 
-Run `analyses/diagnose_pdm_history.sql` — it is executable SQL, not a checklist.
-The decisive query is rows-per-key on `dim_contract`: a Type 2 table has several
-rows per key with non-overlapping intervals; a table that merely soft-deletes
-has one row per key. Step 5 also looks for sibling `_hist` tables and change
-data feed, which is where this history most often turns out to actually live.
+It is not enabled on the PDM sources, so there is no version log to read as of a
+past month end. The `time_travel` mode has been removed rather than left in
+place to fail at runtime.
 
-### Step 2: pick a mode
+This narrows the problem sharply, and it is worth being blunt about why. Time
+travel was the only option that needed **no modelling work** and could still
+reach **backwards**. Without it there are exactly two outcomes:
+
+- the PDM tables are Type 2, and everything is recoverable; or
+- they are not, and history begins the first time you run `dbt snapshot`.
+
+There is no third path. No month that has already passed is recoverable in the
+second case, and the gap grows by one month every month the decision is
+deferred.
+
+### Step 1: the validity columns exist
+
+All eight PDM tables carry **`edh_record_start_ts` / `edh_record_end_ts`**.
+These are *record* validity timestamps — when a version of the row was true —
+which is the kind that reconstructs history, as opposed to business dates like
+`cnt_eff_dt`. They are set as `pdm_eff_col` / `pdm_exp_col` in
+`dbt_project.yml`, so `scd2` mode is wired and ready to use.
+
+**Having the columns is not the same as having the history.** A table can carry
+validity columns and still hold one row per key, if the loader overwrites
+instead of versioning. In that case the as-of predicate matches the single
+current row for every past month, and a backfill of March returns today's
+contracts — silently, with every downstream test passing. That is the same
+failure `assert_backfill_is_honest.sql` prevents in `current` mode, coming back
+through the mode meant to fix it, which is why the default is still `current`.
+
+### Step 2: confirm versions are actually retained
+
+This is now the only open question. Run `analyses/diagnose_pdm_history.sql` —
+it is executable SQL, not a checklist. The decisive query is rows-per-key on
+`dim_contract`: above 1.0 means versions are retained, exactly 1.0 means the
+columns are decorative. `tests/assert_pdm_retains_versions.sql` enforces the
+same threshold on every `scd2` run, so if you flip the mode on a table that
+does not version, the build fails instead of quietly lying.
+
+### `edh_record_status_in` must not be combined with the interval
+
+This is settled and worth stating plainly, because it looks like a bug and
+someone will eventually try to "fix" it.
+
+Measured across the whole table, `'A'` **never appears on a closed version**
+(step 3b: `closed_but_active = 0`). Every superseded version is stamped `'I'`
+when the next one is written, so the flag marks *the latest version*, not a
+business status recorded per version.
+
+So `scd2` mode filters on the validity interval **alone**. Adding
+`and edh_record_status_in = 'A'` would select "the version live at the as-of
+instant *and* the current version", which for any past month is either nothing
+or today's row — the exact failure the mode exists to prevent, arriving
+silently with all tests green.
+
+**The cost of that finding:** business active/inactive status as of a past month
+is *not recoverable from PDM*. It was never stored per version. "Was this
+contract active in March" cannot be answered from this table by any query, and
+would need a different source. Worth knowing before someone promises it.
+
+Step 3c closed the remaining question: **only `'A'` appears on open-ended
+versions**, so `edh_record_status_in = 'A'` is *exactly* equivalent to
+`edh_record_end_ts >= '9999-01-01'`. The flag is a redundant restatement of the
+interval. Two things follow:
+
+- **The switch to `scd2` loses no filtering.** `current` and `scd2` return
+  identical rows for the current month, so the reconciliation should match to
+  the row. Any difference is the session timezone or the interval convention,
+  not the status flag.
+- **`'A'` never excluded lapsed or cancelled contracts.** It only ever picked
+  the latest version. Nothing upstream removes terminated business; the
+  population is narrowed solely by the join to `int_clients__active_eop`, which
+  comes from the metrics marketplace policy-owner fact. If a contract-level
+  lapse filter is ever wanted it belongs in `int_contracts__scoped`, and it
+  needs a column that carries that meaning — this one does not.
+
+`tests/assert_pdm_status_matches_version.sql` enforces the equivalence, so if
+EDH ever introduces a soft-delete the build fails rather than the two modes
+drifting apart unnoticed.
+
+Trial it without committing to it:
+
+```bash
+dbt build --vars '{pdm_history_mode: scd2, report_month: "2026-06-30"}'
+```
+
+and compare the result against the published June figures before flipping the
+default in `dbt_project.yml`.
+
+### Step 3: pick a mode
 
 Set `pdm_history_mode` in `dbt_project.yml`.
 
@@ -213,26 +296,63 @@ Set `pdm_history_mode` in `dbt_project.yml`.
 |---|---|---|
 | `current` | normal run (default) | today only; backfill refused |
 | `scd2` | PDM tables are Type 2 | as far as the source retains |
-| `time_travel` | need a short backfill now | Delta retention, ~30 days |
-| `snapshot` | source overwrites in place | from the day you start |
+| `snapshot` | source overwrites in place | from the day you start, no earlier |
 
-`scd2` is the real answer if it is available. Set `pdm_eff_col` / `pdm_exp_col`
-to the confirmed column names and every model becomes point-in-time with no
-other change.
+`scd2` is the real answer and the columns are already configured. Every model
+becomes point-in-time with no other change, and it is the only mode that makes
+the *normal* monthly run exact rather than merely close.
 
-`time_travel` uses Delta's own version log (`TIMESTAMP AS OF`), pinned to
-`23:59:59` on the month end. Correct with no modelling work, but `describe
-history` will show you the floor — usually 30 days, so it covers last month and
-nothing earlier. **Those months are expiring as you read this**; if this is your
-only option, backfill now.
+**Two subtleties, both silent when wrong.** The validity columns are
+timestamps, not dates, and comparing them against a bare date —
+`edh_record_end_ts > date'2026-06-30'` — casts to `2026-06-30 00:00:00`, asking
+for state at the *start* of the month-end day and discarding every change made
+during the last day of the month. `pdm_as_of_instant()` in
+`macros/report_dates.sql` handles that.
 
-`snapshot` is the fallback when the source genuinely overwrites. `snapshots/`
-contains three: `dim_contract`, `fact_contract_cmpnt_producer` and
-`dim_product`. Producer assignments were prioritised because a servicing
-reassignment is exactly the kind of edit that overwrites in place and leaves no
-trace. Run `dbt snapshot` **daily and before `dbt build`**, on its own schedule.
-A missed day is a permanent hole, and snapshots are append-only — drop the
-table and the history is gone for good.
+The second is the interval convention. PDM's intervals are **closed with a
+one-second gap**, not half-open:
+
+```
+I   2019-11-01 04:00:00   2022-01-04 10:57:04
+I   2022-01-04 10:57:05   2022-01-05 09:12:06
+A   2022-01-05 09:12:07   9999-12-31 05:00:00
+```
+
+Each version ends one second *before* the next begins, so the as-of instant is
+anchored on `23:59:59` of the month end rather than the next day's midnight. A
+midnight anchor would fall in that one-second hole whenever a change is written
+on a midnight boundary — and the `04:00:00Z` / `05:00:00Z` values above are
+midnight US/Eastern, so this source demonstrably does that. The key would drop
+out of the month with no row and no error.
+
+Which also means **the session timezone matters**. `last_day()` resolves in the
+session timezone, so a session running in UTC evaluates "end of 30 June" as
+`23:59:59Z` = `19:59:59` Eastern, pushing the last four hours of every month
+into the next one. Step 0 of the diagnostic checks it; fix it on the profile,
+not in the models.
+
+Note that dbt's own snapshot intervals *are* half-open, so the `snapshot` branch
+of the macro uses a strict `>` on the upper bound where `scd2` uses `>=`. The
+two conventions genuinely differ; this is not an inconsistency.
+
+`snapshot` is the fallback when the source genuinely overwrites. It reaches
+back to your first snapshot run and no further, so a backfill of an earlier
+month returns **no rows rather than wrong rows** — the right failure, but still
+a failure. If this is where you land, start running `dbt snapshot` today rather
+than after the next month end, and tell whoever consumes `ppg_metrics_*` that
+pre-snapshot months cannot be restated. That is a reporting fact, not an
+engineering detail. `snapshots/` contains three: `dim_contract`,
+`fact_contract_cmpnt_producer` and `dim_product`. Producer assignments were
+prioritised because a servicing reassignment is exactly the kind of edit that
+overwrites in place and leaves no trace. Run `dbt snapshot` **daily and before
+`dbt build`**, on its own schedule. A missed day is a permanent hole, and
+snapshots are append-only — drop the table and the history is gone for good.
+
+Daily matters even though the report is monthly: the snapshot records a change
+when it next *sees* it, so an edit made and reverted between runs is invisible,
+and a snapshot run only at month end would date every change to month end. The
+report grain is monthly; the capture cadence has to be finer than the thing it
+is trying to observe.
 
 **`snapshot` mode is a hybrid, and it does not announce itself.** Only those
 three tables have snapshots. The other five PDM staging models keep reading the
@@ -246,8 +366,9 @@ audit-grade.
 ### What you cannot recover
 
 If the diagnostic shows one row per key and no validity columns, **history
-before today does not exist at source** beyond Delta retention. Nothing in dbt
-can invent it. Two partial consolations:
+before today does not exist at source**, full stop — there is no retention
+window to fall back on now that time travel is ruled out. Nothing in dbt can
+invent it. Two partial consolations:
 
 - `ppg_metrics_dtl_hist` already holds real PPG history. It cannot rebuild the
   mapping table exactly -- it survived the inner join to active clients, so it

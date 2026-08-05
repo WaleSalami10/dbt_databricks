@@ -54,7 +54,7 @@ current_load as (
 
 )
 
-{% if var('include_historical_load', false) %}
+{% if ppg_var('include_historical_load') %}
 
 -- The original carried this branch commented out, together with a
 -- double-commented `--WHERE month_end_date -->= ('2025-01-01')`. Enable with:
@@ -85,8 +85,8 @@ current_load as (
         fp_flag,
         gm_or_fp_flag
     from {{ source('ppg_legacy', 'ppg_metrics_dtl_hist') }}
-    {% if var('historical_load_from', none) %}
-    where month_end_date >= date'{{ var('historical_load_from') }}'
+    {% if ppg_var('historical_load_from') %}
+    where month_end_date >= date'{{ ppg_var('historical_load_from') }}'
     {% endif %}
 
 )

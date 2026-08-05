@@ -51,7 +51,7 @@ select distinct
     -- clause. That reads as "unknown" when the business meaning is "had not
     -- planned yet as of month end" -- i.e. 'N'. Set coalesce_planning_flags to
     -- false to reproduce the original NULLs exactly.
-    {% if var('coalesce_planning_flags', true) %}
+    {% if ppg_var('coalesce_planning_flags') %}
     coalesce(pln.gm_flag, 'N')                          as gm_flag,
     coalesce(pln.fp_flag, 'N')                          as fp_flag,
     coalesce(pln.gm_or_fp_flag, 'N')                    as gm_or_fp_flag

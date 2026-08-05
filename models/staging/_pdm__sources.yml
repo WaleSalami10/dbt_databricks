@@ -57,5 +57,5 @@ sources:
       - name: ppg_metrics_dtl_hist
         description: >
           Pre-migration contract detail history. Only read when
-          var('include_historical_load') is true. Nothing in this project
+          ppg_var('include_historical_load') is true. Nothing in this project
           builds it; it exists to be folded into ppg_metrics_monthly once.

@@ -39,7 +39,16 @@ select
     cnt_eff_dt,
     edh_record_status_in
 from {{ source('pdm', 'dim_contract') }}
-where lob_nm in ('LIFE INSURANCE', 'ANNUITIES', 'LONG TERM CARE')
-   or cnt_iss_cd_nk = 'IDI'
+-- Current version only. The source is Type 2, so without this the snapshot
+-- sees every historical version of a key at once and dbt fails on duplicate
+-- unique_key values. Equivalent to `edh_record_end_ts >= '9999-01-01'`; see
+-- tests/assert_pdm_status_matches_version.sql.
+where edh_record_status_in = 'A'
+  -- Parenthesised: `or` binds looser than `and`, so without these brackets the
+  -- status filter would apply only to the IDI branch.
+  and (
+        lob_nm in ('LIFE INSURANCE', 'ANNUITIES', 'LONG TERM CARE')
+     or cnt_iss_cd_nk = 'IDI'
+  )
 
 {% endsnapshot %}

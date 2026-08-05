@@ -14,7 +14,7 @@
 #}
 {% macro pick_producer(source_key) %}
 
-{% if var('apply_producer_role_filter') %}
+{% if ppg_var('apply_producer_role_filter') %}
 qualify row_number() over (
     partition by {{ source_key }}
     order by

@@ -4,7 +4,7 @@ models:
   - name: stg_pdm__dates
     description: >
       The date spine. Exactly one row: the reporting month selected by
-      var('report_month'). Everything else derives its dates from here.
+      ppg_var('report_month'). Everything else derives its dates from here.
     columns:
       - name: month_end_date
         description: The reporting month end. Partition key of every mart.
@@ -31,6 +31,26 @@ models:
         tests: [not_null]
       - name: ytd_end_dim_sqn
         tests: [not_null]
+
+  - name: stg_pdm__contracts
+    description: >
+      PDM contracts resolved to a single version per key as of the reporting
+      month. The uniqueness test below is the build-time check on the as-of
+      predicate itself.
+    tests:
+      - dbt_utils.unique_combination_of_columns:
+          description: >
+            One row per contract after the as-of filter. In 'current' mode this
+            is just the status flag working. In 'scd2' mode it is load-bearing:
+            a failure means the validity intervals OVERLAP, so more than one
+            version of a contract satisfies the as-of predicate and every
+            affected contract is counted twice all the way to the summary. That
+            is step 3a of analyses/diagnose_pdm_history.sql, enforced on every
+            run instead of checked once.
+          arguments:
+            combination_of_columns:
+              - cnt_id_nk
+              - cnt_iss_cd_nk
 
   - name: stg_crm__sf_account
     columns:
