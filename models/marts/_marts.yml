@@ -3,18 +3,27 @@ version: 2
 models:
   - name: ppg_stg_cnt_prd_mapping
     description: >
-      One row per in-scope contract or investment account per snapshot date,
-      with product categorisation attached. Feeds ppg_metrics_dtl.
+      One row per in-scope contract or investment account per REPORTING MONTH,
+      with product categorisation attached. Feeds ppg_metrics_dtl. Was keyed by
+      a daily snapshot_date, which did not match the monthly grain of every
+      table downstream of it.
     tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
             combination_of_columns:
-              - snapshot_date
+              - month_end_date
               - cnt_id_nk
               - cnt_iss_cd_nk
               - producer_id_nk
     columns:
+      - name: month_end_date
+        tests: [not_null]
       - name: snapshot_date
+        description: >
+          Audit only: the date PDM was observed. Not a key, and nothing joins
+          on it. In pdm_history_mode 'current' it is the run date and will be
+          LATER than month_end_date -- assert_snapshot_is_month_end.sql reports
+          the drift. In every other mode it equals month_end_date.
         tests: [not_null]
       - name: cnt_id_nk
         tests: [not_null]

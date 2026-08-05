@@ -2,28 +2,31 @@ version: 2
 
 models:
   - name: stg_pdm__dates
+    description: >
+      The date spine. Exactly one row: the reporting month selected by
+      var('report_month'). Everything else derives its dates from here.
     columns:
-      - name: snapshot_date
-        tests: [not_null, unique]
       - name: month_end_date
+        description: The reporting month end. Partition key of every mart.
+        tests: [not_null, unique]
+      - name: snapshot_date
+        description: >
+          When PDM was observed, not what is being reported. Audit only.
+        tests: [not_null]
+      - name: ytd_begin_dt
+        tests: [not_null]
+      - name: month_end_dim_sqn
         tests: [not_null]
 
   - name: stg_pdm__ytd_dates
     description: >
-      YTD window for the reporting month. Exactly one row per run.
+      Renaming view over stg_pdm__dates for the models that read ytd_end_dt.
+      This used to be an independent second computation of the month end; the
+      relationships test that guarded the two against drifting is gone because
+      there is now only one computation to drift from.
     columns:
       - name: ytd_end_dt
-        tests:
-          - not_null
-          - unique
-          - relationships:
-              description: >
-                Guards the two independent month-end computations described in
-                the model header. If this fails, cell 1 and cell 2 have drifted
-                onto different months and every downstream count is wrong.
-              arguments:
-                to: ref('stg_pdm__dates')
-                field: month_end_date
+        tests: [not_null, unique]
       - name: ytd_begin_dt
         tests: [not_null]
       - name: ytd_end_dim_sqn

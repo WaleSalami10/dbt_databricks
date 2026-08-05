@@ -18,7 +18,7 @@
 -- The original's `INNER JOIN dates dt ON dt.ytd_end_dt = month_end_date` was
 -- doing the job dbt's incremental config now does: pick the one month to
 -- append. Kept as an explicit filter so a run is idempotent for a given
--- snapshot_date and `--vars` backfill still works.
+-- report_month and `--vars` backfill still works.
 
 with dtl as (
 

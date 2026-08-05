@@ -1,16 +1,19 @@
--- Replaces the `dates` CTE in cell 2 (ppg_metrics_dtl).
+-- Replaces the `dates` CTE in cells 2, 3 and 4.
 --
--- Cell 1 anchored on CURRENT_DATE and derived month end as mth_begin_dt - 1.
--- Cell 2 anchored on ADD_MONTHS(CURRENT_DATE, -1) and took mth_end_dt directly.
--- Two different computations of the same value. They agree today, but they are
--- independent, so a change to dim_date could silently split them. The test in
--- _staging.yml asserts month_end_date = ytd_end_dt on every run.
-with ytd_dates as (
-select distinct
-    to_date(date_trunc('year', mth_end_dt))      as ytd_begin_dt,
-    mth_end_dt                                   as ytd_end_dt,
-    date_format(mth_end_dt, 'yyyyMMdd')          as ytd_end_dim_sqn
-from {{ source('pdm', 'dim_date') }}
-where clndr_dt = add_months({{ snapshot_date() }}, -1)
-)
-select * from ytd_dates
+-- This used to be a SECOND, INDEPENDENT computation of the month end: cell 1
+-- derived it as mth_begin_dt - 1 from CURRENT_DATE, cell 2 read mth_end_dt
+-- from ADD_MONTHS(CURRENT_DATE, -1). They agreed on every date I checked, but
+-- nothing enforced it, so _staging.yml carried a relationships test between
+-- them to catch a drift that should never have been possible in the first
+-- place.
+--
+-- Now that the reporting month is an explicit input rather than something each
+-- cell re-derives from the run date, there is nothing left to compute. This is
+-- a renaming view over the one date spine, kept so the models that read
+-- ytd_end_dt do not all have to change.
+select
+    snapshot_date,
+    ytd_begin_dt,
+    month_end_date      as ytd_end_dt,
+    month_end_dim_sqn   as ytd_end_dim_sqn
+from {{ ref('stg_pdm__dates') }}

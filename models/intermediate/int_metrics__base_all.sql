@@ -4,12 +4,18 @@
 -- The original read ppg_stg_cnt_prd_mapping unfiltered, which was safe only
 -- because cell 1 did `create or replace` and the table held exactly one
 -- snapshot. ppg_stg_cnt_prd_mapping is now incremental and retains history, so
--- reading it unfiltered would multiply every metric by the number of snapshots
--- retained. The snapshot_date filter below is mandatory, not optional.
+-- reading it unfiltered would multiply every metric by the number of months
+-- retained. The month filter below is mandatory, not optional.
+--
+-- It used to filter on `snapshot_date = current_date`, which coupled this
+-- model to the mapping model having run TODAY: if mapping ran at 23:55 and
+-- this ran at 00:05, the filter matched nothing and the month came out empty
+-- with no error. Filtering on the reporting month removes that coupling and
+-- prunes the same partition.
 with mapping as (
     select *
     from {{ ref('ppg_stg_cnt_prd_mapping') }}
-    where snapshot_date = {{ snapshot_date() }}
+    where month_end_date = (select month_end_date from {{ ref('stg_pdm__dates') }})
 ),
 
 dates as (

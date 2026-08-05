@@ -14,14 +14,55 @@ All four cells are modelled.
 ```bash
 dbt deps          # dbt_utils, needed for the grain tests
 dbt seed
-dbt build
+dbt build         # builds the most recent complete month
 ```
 
-Backfill a specific day:
+Build a specific month. Any day inside the month works — the month end is
+resolved from `dim_date`, so these three are the same command:
 
 ```bash
-dbt build --vars '{snapshot_date: "2026-06-14"}'
+dbt build --vars '{report_month: "2026-06-01"}'
+dbt build --vars '{report_month: "2026-06-14"}'
+dbt build --vars '{report_month: "2026-06-30"}'
 ```
+
+A **past** month is refused unless `pdm_history_mode` is also set — see
+[Getting history](#getting-history-of-ppg_stg_cnt_prd_mapping). That refusal is
+the point: without it the backfill silently succeeds and is wrong.
+
+## This is a monthly report
+
+It was previously anchored on a **day**, and that mismatch was structural rather
+than cosmetic.
+
+Both date CTEs in the original always collapsed to the same previous month end
+no matter which day they ran — cell 1 computed `mth_begin_dt - 1` from
+`CURRENT_DATE`, cell 2 read `mth_end_dt` from `ADD_MONTHS(CURRENT_DATE, -1)`.
+Every mart is partitioned by `month_end_date`. Only `ppg_stg_cnt_prd_mapping`
+was partitioned by a daily `snapshot_date`, which meant:
+
+- roughly 30 partitions per reporting month, all describing the same month;
+- a rerun on a different day quietly changed an already-published month, because
+  `int_metrics__base_all` filtered the mapping table to `snapshot_date =
+  current_date`;
+- that same filter coupled the marts to the mapping model having run **today** —
+  cross midnight between the two and the month came out empty, with no error;
+- "backfill a missed day", which is not a thing a monthly report has.
+
+Now: `var('report_month')` selects the month, `stg_pdm__dates` is the single
+date spine, and `ppg_stg_cnt_prd_mapping` is partitioned and keyed on
+`month_end_date` like everything else.
+
+`snapshot_date` survives as an **audit column** — when PDM was observed, not
+what is being reported. It is not a key and nothing joins on it. The two dates
+are separate on purpose (`macros/report_dates.sql`): in `current` mode a report
+built on 4 August for the July month end reads 4 August's contracts, so
+`snapshot_date` is what tells you the month was captured four days late.
+`tests/assert_snapshot_is_month_end.sql` warns with the drift in days.
+
+`stg_pdm__ytd_dates` is now a renaming view over the spine rather than a second
+independent computation of the month end, so the `relationships` test that
+guarded the two against drifting apart is gone — there is nothing left to drift.
 
 ## CTE to model mapping
 
@@ -125,23 +166,134 @@ Two things follow:
 If both were resolved, cell 3 would genuinely collapse to a view. Until then it
 is doing real work and should stay a materialized model.
 
+## Getting history of ppg_stg_cnt_prd_mapping
+
+`edh_record_status_in` cannot give you this, and it is worth being precise about
+why: it is a **current-state flag, not a temporal one**. `'A'` means "this is the
+row that is live right now". Filtering to `'I'` does not give you rows that were
+alive last month -- it gives you rows that are dead now, with no indication of
+when they died. Point-in-time reconstruction needs a validity *interval* per row.
+No combination of status values can synthesise one.
+
+### The trap this exposed
+
+Before this change, only the date spine moved with the run date. Every PDM
+staging model was pinned to current state, so
+
+```bash
+dbt build --vars '{report_month: "2026-06-30"}'
+```
+
+produced **today's** contracts, owners and producers stamped with June's month
+end and written into June's partition. It looked plausible and passed every
+test. `tests/assert_backfill_is_honest.sql` now fails the build in exactly that
+case.
+
+**The same defect affects the normal run, at smaller scale.** In `current` mode
+a report built on 4 August for July reads 4 August's state: four days of new
+business, lapses and producer reassignments leak into July. That is how the
+notebook always behaved, so `tests/assert_snapshot_is_month_end.sql` warns
+rather than fails — but it means a month rerun a week later gives a different
+answer. Any other mode reads the month end itself and is exact, which is why
+`time_travel` is worth turning on even if you never backfill.
+
+### Step 1: find out what you have
+
+Run `analyses/diagnose_pdm_history.sql` — it is executable SQL, not a checklist.
+The decisive query is rows-per-key on `dim_contract`: a Type 2 table has several
+rows per key with non-overlapping intervals; a table that merely soft-deletes
+has one row per key. Step 5 also looks for sibling `_hist` tables and change
+data feed, which is where this history most often turns out to actually live.
+
+### Step 2: pick a mode
+
+Set `pdm_history_mode` in `dbt_project.yml`.
+
+| Mode | Use when | Reaches back |
+|---|---|---|
+| `current` | normal run (default) | today only; backfill refused |
+| `scd2` | PDM tables are Type 2 | as far as the source retains |
+| `time_travel` | need a short backfill now | Delta retention, ~30 days |
+| `snapshot` | source overwrites in place | from the day you start |
+
+`scd2` is the real answer if it is available. Set `pdm_eff_col` / `pdm_exp_col`
+to the confirmed column names and every model becomes point-in-time with no
+other change.
+
+`time_travel` uses Delta's own version log (`TIMESTAMP AS OF`), pinned to
+`23:59:59` on the month end. Correct with no modelling work, but `describe
+history` will show you the floor — usually 30 days, so it covers last month and
+nothing earlier. **Those months are expiring as you read this**; if this is your
+only option, backfill now.
+
+`snapshot` is the fallback when the source genuinely overwrites. `snapshots/`
+contains three: `dim_contract`, `fact_contract_cmpnt_producer` and
+`dim_product`. Producer assignments were prioritised because a servicing
+reassignment is exactly the kind of edit that overwrites in place and leaves no
+trace. Run `dbt snapshot` **daily and before `dbt build`**, on its own schedule.
+A missed day is a permanent hole, and snapshots are append-only — drop the
+table and the history is gone for good.
+
+**`snapshot` mode is a hybrid, and it does not announce itself.** Only those
+three tables have snapshots. The other five PDM staging models keep reading the
+live source at current state, so a backfilled month has contracts and producers
+as they were, but owners, investment accounts and sub-accounts as they are
+today. `macros/pdm_as_of.sql` handles this per table rather than emitting
+`dbt_valid_from` against tables that have no such column, but the asymmetry is
+real: add the missing snapshots before treating a `snapshot`-mode backfill as
+audit-grade.
+
+### What you cannot recover
+
+If the diagnostic shows one row per key and no validity columns, **history
+before today does not exist at source** beyond Delta retention. Nothing in dbt
+can invent it. Two partial consolations:
+
+- `ppg_metrics_dtl_hist` already holds real PPG history. It cannot rebuild the
+  mapping table exactly -- it survived the inner join to active clients, so it
+  is a subset, and it lacks `cnt_iss_cd_nk` and `producer_cnt_role_nm` -- but
+  step 6 of the diagnostic shows what shape it covers.
+- `cnt_eff_dt` lets you reconstruct which contracts *existed* at a past date.
+  That captures additions only. A contract that lapsed still appears, and
+  product recategorisations are invisible. Useful for counting, not for audit.
+
+### One semantic check before trusting `scd2`
+
+The macro deliberately does **not** also require `edh_record_status_in = 'A'` in
+`scd2` mode. In most EDH Type 2 designs that flag marks the latest version of a
+key, so ANDing it with the interval collapses back to current state and silently
+removes the history. In some designs it means "not soft-deleted" and is safe to
+combine. Step 3b of the diagnostic distinguishes them. Get this wrong in the
+first direction and your backfill returns current data again.
+
 ## Read this before running
 
-**1. `base_all` now needs a snapshot filter, and this is not optional.**
+**1. `base_all` needs a month filter, and this is not optional.**
 The original read `ppg_stg_cnt_prd_mapping` with no date predicate. That was
 only safe because cell 1 did `create or replace`, so the table held exactly one
 snapshot. The mapping model is now incremental and retains history, so reading
-it unfiltered would multiply every metric by the number of retained snapshots.
-`int_metrics__base_all` filters to the run's snapshot_date. If you revert the
-mapping model to a full rebuild, that filter becomes a no-op and stays correct
-either way.
+it unfiltered would multiply every metric by the number of retained months.
+`int_metrics__base_all` filters to the reporting month. It used to filter on
+`snapshot_date = current_date`, which additionally required the mapping model to
+have run the same calendar day; filtering on the month removes that coupling and
+prunes the same partition.
 
-**2. Two independent month-end computations.** Cell 1 anchors on
-`CURRENT_DATE` and derives `mth_begin_dt - 1`. Cell 2 anchors on
-`ADD_MONTHS(CURRENT_DATE, -1)` and reads `mth_end_dt` directly. They agree on
+**2. Two independent month-end computations — resolved.** Cell 1 anchored on
+`CURRENT_DATE` and derived `mth_begin_dt - 1`. Cell 2 anchored on
+`ADD_MONTHS(CURRENT_DATE, -1)` and read `mth_end_dt` directly. They agreed on
 every date I checked, including month-length edge cases, but nothing enforced
-that. `stg_pdm__ytd_dates` now carries a `relationships` test against
-`stg_pdm__dates.month_end_date` that fails the build if they ever diverge.
+that. There is now one date spine and nothing to reconcile. The residual risk
+moved rather than vanished: `macros/report_dates.sql` computes the as-of date
+with `last_day()` while the partition key comes from `dim_date.mth_end_dt`, so
+`tests/assert_month_end_is_calendar.sql` fails the build if `dim_date` is ever
+switched to a fiscal calendar.
+
+**2b. `stg_digital__gm_plan_dates` may be missing `where type <> 'FB'`.** The
+two copies of this project disagreed and nothing records which is right. If that
+source carries `type = 'FB'` rows, fee-based plans are counted on the GM side as
+well as the FP side and `gm_plan_sales` is overstated. See the model header for
+the query that settles it. This is the only unresolved *logic* question in the
+merge.
 
 **3. Planning flags were NULL, not 'N'.** In the original, the
 `pln.Completed_Plan_Dt <= base.month_end_date` predicate sits in the `LEFT JOIN`
@@ -199,7 +351,7 @@ variations between repetitions.
 
 ## Grain
 
-- `ppg_stg_cnt_prd_mapping`: one row per `snapshot_date + cnt_id_nk +
+- `ppg_stg_cnt_prd_mapping`: one row per `month_end_date + cnt_id_nk +
   cnt_iss_cd_nk + producer_id_nk`
 - `ppg_metrics_dtl`: one row per `month_end_date + cnt_id_nk + cnt_iss_cd_nk +
   producer_id_nk`

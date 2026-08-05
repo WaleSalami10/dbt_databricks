@@ -4,7 +4,7 @@ select
     product_ln_cd,
     product_grp_nm,
     product_nm
-from {{ source('pdm', 'dim_product') }}
-where edh_record_status_in = 'A'
+from {{ pdm_relation('pdm', 'dim_product') }}
+where {{ pdm_as_of('dim_product') }}
 )
 select * from products

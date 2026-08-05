@@ -8,11 +8,45 @@ model-paths: ["models"]
 test-paths: ["tests"]
 seed-paths: ["seeds"]
 macro-paths: ["macros"]
+snapshot-paths: ["snapshots"]
+analysis-paths: ["analyses"]
 
 vars:
-  # Set to a 'YYYY-MM-DD' string to backfill a specific day.
-  # Leave as 'current_date' for the normal daily run.
-  snapshot_date: 'current_date'
+  # WHICH MONTH IS BEING REPORTED. This is a monthly report: the reporting
+  # grain is a calendar month, and every mart is partitioned by month_end_date.
+  #
+  #   'previous_month'  -- the normal run: the most recent complete month.
+  #   'YYYY-MM-DD'      -- ANY day inside the month you want. The month end is
+  #                        resolved from dim_date, so '2026-07-01', '2026-07-14'
+  #                        and '2026-07-31' all mean the July 2026 report.
+  #
+  # Backfilling a past month is REFUSED while pdm_history_mode is 'current' --
+  # see tests/assert_backfill_is_honest.sql for why.
+  report_month: 'previous_month'
+
+  # How the PDM staging models resolve "what was true at month end".
+  #   current      -- today's state only. Backfill refused. (default)
+  #   scd2         -- source is Type 2; set pdm_eff_col / pdm_exp_col below.
+  #   snapshot     -- read the dbt snapshots; history from the day you started.
+  #   time_travel  -- Delta TIMESTAMP AS OF; limited by retention (~30d).
+  # Run analyses/diagnose_pdm_history.sql to find out which applies.
+  #
+  # Note that 'current' is approximate even for the normal run: a report built
+  # on 4 August for the July month end reads 4 August's contract state. Any
+  # other mode reads the month end itself and is exact.
+  pdm_history_mode: 'current'
+
+  # Only used when pdm_history_mode = 'scd2'. Confirm the real names first.
+  pdm_eff_col: 'edh_eff_dt'
+  pdm_exp_col: 'edh_exp_dt'
+
+  # Only used when pdm_history_mode = 'snapshot'. Tables with a snapshot built
+  # in snapshots/ ; anything not listed keeps reading the live source at
+  # current state, which is a known gap -- see macros/pdm_as_of.sql.
+  pdm_snapshotted_tables:
+    - 'dim_contract'
+    - 'fact_contract_cmpnt_producer'
+    - 'dim_product'
 
   # The original query had every producer-role filter commented out.
   # false  = reproduce current behaviour (all producer roles, fan-out possible)
