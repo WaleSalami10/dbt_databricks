@@ -10,35 +10,24 @@ seed-paths: ["seeds"]
 macro-paths: ["macros"]
 
 vars:
-  # Set to a 'YYYY-MM-DD' string to backfill a specific day.
-  # Leave as 'current_date' for the normal daily run.
+  # Set to a 'YYYY-MM-DD' string to rebuild the report as of a past day.
+  # Leave as 'current_date' for the normal daily run, where the calendar
+  # anchors on the feed's load date. Read by stg_a360__load_control.
   snapshot_date: 'current_date'
 
-  # The original query had every producer-role filter commented out.
-  # false  = reproduce current behaviour (all producer roles, fan-out possible)
-  # true   = keep only the role configured per LOB in seeds/lob_producer_role.csv
-  apply_producer_role_filter: false
-
-  # true  = a client with no planning record, or one whose plan completed after
-  #         the reporting month, gets 'N' flags
-  # false = reproduce the original NULLs
-  coalesce_planning_flags: true
-
-  # One-time fold-in of pre-migration history from ppg_metrics_dtl_hist.
-  # Leave false for normal runs; see ppg_metrics_monthly header.
-  include_historical_load: false
-  historical_load_from: null
-
-  # Product types that collapse to a single unit when computing depth in
-  # ppg_metrics_summ_monthly. These must be values emitted by
-  # seeds/product_category_map.csv; tests/assert_depth_collapse_types_exist.sql
-  # enforces that.
-  depth_collapse_product_types:
-    - 'Level Term and Level Convertible_Renewable Term'
-    - 'Yearly Convertible_Renewable Term'
+  # true  = every source('a360', x) resolves to <catalog>.<schema>_dummy_a360.x,
+  #         the stand-in tables written by scripts/load_dummy_data.py, so the
+  #         project builds with no dependency on prod_execution_rs.
+  # false = read the real a360 mart.
+  # Read at PARSE time, so it must come from here or --vars. See
+  # macros/source.sql; the schema is overridable with the dummy_schema var.
+  use_dummy_data: false
 
 models:
   ppg:
+    +persist_docs:
+      relation: true
+      columns: true
     staging:
       +materialized: view
       +schema: staging
@@ -52,8 +41,28 @@ models:
 seeds:
   ppg:
     +schema: seeds
-    product_category_map:
+
+    # Only genuine business lookups live here. The a360 stand-ins are TABLES
+    # loaded by scripts/load_dummy_data.py, not seeds -- they replace sources,
+    # and a source belongs outside the DAG.
+    active_status_codes:
       +column_types:
-        product_ln_cd: string
-        product_grp_nm: string
-        product_nm: string
+        # Zero-padded text ('01', not 1). Inferred as an integer the leading
+        # zero is lost, the join to marketer status matches nothing, and the
+        # report shows no marketer under contract -- silently, with every test
+        # still passing. See tests/assert_report_is_not_vacuous.sql.
+        status_cd: string
+    reportable_dashboard_status_codes:
+      +column_types:
+        status_cd: string
+
+data_tests:
+  # NOT enabled globally. store_failures materialises one table per test, and
+  # this project has ~155 of them against a Unity Catalog limit of 100 tables
+  # per schema -- turning it on here fails the build with QUOTA_EXCEEDED.
+  #
+  # Use it on demand instead, scoped to whatever you are investigating:
+  #     dbt test --store-failures --select fct_marketer_production
+  # and the failing rows land in <schema>_dbt_test_failures.
+  +store_failures: false
+  +schema: dbt_test_failures

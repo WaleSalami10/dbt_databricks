@@ -1,238 +1,255 @@
-# PPG pipeline, as dbt
+# FOD_query.sql → dbt
 
-Refactor of the PPG Monthly Load notebook. Covers cells 1 and 2:
+A translation of the 182-line `FOD_query.sql` into a layered dbt project.
 
-- **Cell 1** — `create or replace table … ppg_stg_cnt_prd_mapping`
-- **Cell 2** — `insert into … ppg_metrics_dtl`
-- **Cell 3** — `insert into … ppg_metrics_monthly`
-- **Cell 4** — `insert into … ppg_metrics_summ_monthly`
+## The layout
 
-All four cells are modelled.
-
-## Setup
-
-```bash
-dbt deps          # dbt_utils, needed for the grain tests
-dbt seed
-dbt build
+```
+sources (a360 mart, read-only)
+   │
+   ├─ staging/        one thin model per source table: rename, cast, nothing clever
+   │     stg_a360__load_control          ← ONE ROW: the report's as-of date
+   │     stg_a360__daily_fyc             ← daily commission
+   │     stg_a360__daily_paid_cases      ← daily paid cases
+   │     stg_a360__product               ← product dim, carries the 'LF' line code
+   │     stg_a360__class_history         ← type-2 class windows
+   │     stg_a360__marketer_status       ← type-2 contract windows, 9999 sentinel
+   │     stg_a360__marketer_dashboard    ← the marketer dim, self-joined in the mart
+   │     stg_a360__marketer_appointment  ← original appointment date
+   │     stg_a360__org_zone              ← office / zone lookup
+   │     stg_a360__title_type            ← title lookup, initcap'd
+   │     stg_a360__manpower              ← headcount flags
+   │
+   ├─ intermediate/   the business logic
+   │     int_reporting_periods      ← the `dt` CTE. ONE ROW. everything anchors here
+   │     int_fyc_by_marketer        ← the `fyc` CTE
+   │     int_paid_cases_by_marketer ← the `prm` CTE
+   │     int_class_by_marketer      ← the `class_hist` CTE
+   │     int_marketer_contract      ← resolves the 9999 sentinel end date
+   │
+   └─ marts/
+         fct_marketer_production    ← the final SELECT
 ```
 
-Backfill a specific day:
+Each CTE in the original became one model. That is the whole idea: instead of a
+single 182-line block you can only run start-to-finish, you get six pieces you
+can `dbt run --select int_fyc_by_marketer` and inspect on their own.
+
+Staging does renaming, trimming and casting and nothing else. Two places where
+that rule shapes the layer:
+
+- **`stg_a360__daily_paid_cases` does not carry the product line.** The line
+  code lives on the product dimension, so the join is in
+  `int_paid_cases_by_marketer` where the `'LF'` filter also lives.
+- **`stg_a360__marketer_status` exposes the contract end date twice**, raw text
+  and as a resolved timestamp. Resolving the 9999 sentinel to a *timestamp* is a
+  cast; resolving it to *the end of the reporting year* is a business rule, and
+  that one stays in `int_marketer_contract`.
+
+## Getting it running
 
 ```bash
-dbt build --vars '{snapshot_date: "2026-06-14"}'
+dbt deps
+dbt build                 # seed, run and test in dependency order
 ```
 
-## CTE to model mapping
-
-### Cell 1 -> `ppg_stg_cnt_prd_mapping`
-
-| Original CTE | Model |
-|---|---|
-| `dates` | `stg_pdm__dates` |
-| `core_contracts` | `int_contracts__scoped` |
-| `core_clients` | `int_owners__by_contract` |
-| `core` (3 x union all) | `int_contracts__with_producer` |
-| `wm_accounts` | `int_wm_accounts` |
-| `wm_clients` | `int_owners__by_invest_acct` |
-| `wm` (2 x union all) | `int_wm_accounts__with_producer` |
-| `core_wm` | `int_products__unified` |
-| `core_wm_client_product` | `int_products__categorized` |
-| final select | `ppg_stg_cnt_prd_mapping` |
-
-The four ~300-line `CASE` expressions became `seeds/product_category_map.csv`.
-
-### Cell 2 -> `ppg_metrics_dtl`
-
-| Original CTE | Model |
-|---|---|
-| `dates` | `stg_pdm__ytd_dates` |
-| `base_all` | `int_metrics__base_all` |
-| `get_active_cl_eop` | `int_clients__active_eop` |
-| `clients_with_planning` + `clients_with_planning_v2` | `int_clients__planning_flags` (+ `int_planning__gm_clients`, `int_planning__fp_clients`) |
-| final select | `ppg_metrics_dtl` |
-
-### Cell 3 -> `ppg_metrics_monthly`
-
-| Original CTE | Model |
-|---|---|
-| `dates` | `stg_pdm__ytd_dates` (reused) |
-| final select | `ppg_metrics_monthly` |
-| commented-out `ppg_metrics_dtl_hist` union | same model, behind `include_historical_load` |
-
-### Cell 4 -> `ppg_metrics_summ_monthly`
-
-| Original CTE | Model |
-|---|---|
-| `dates` | `stg_pdm__ytd_dates` (reused) |
-| `sales` | `int_summ__sales` |
-| `active_clients` | `int_summ__active_clients` |
-| `base` | `int_summ__client_breadth_depth` |
-| `breadth_depth` | `int_summ__breadth_depth` |
-| final select | `ppg_metrics_summ_monthly` |
-
-The sf_account to `mt__gm_ppg_plan_dates` join appeared **three times** in cell 2
-and the fee-based subquery **twice**. Both are now defined once. The two
-planning CTEs collapse into one conditional aggregate: the original built a
-union and then left-joined back to two more copies of the same subqueries purely
-to determine which side each client came from.
-
-## ppg_metrics_monthly is a leaf node
-
-Cell 4 reads `ppg_metrics_dtl` directly. It does **not** read
-`ppg_metrics_monthly`. Nothing else in the notebook does either, so within this
-project `ppg_metrics_monthly` is a leaf: built every month, consumed by nothing
-that is version-controlled here.
-
-That does not make it dead -- a dashboard or an extract almost certainly points
-at it, which is exactly the kind of dependency that does not show up in a
-notebook. But it is worth confirming, because it is the cheapest thing in the
-pipeline to delete if nothing reads it, and the most dangerous to change blindly
-if something does. Check the table's query history before you touch it.
-
-## Is cell 3 still needed?
-
-Yes, but not for the reason it was written.
-
-Structurally, `ppg_metrics_monthly` is `ppg_metrics_dtl` with two columns
-dropped -- `cnt_iss_cd_nk` and `producer_cnt_role_nm` -- and `distinct` applied.
-Everything else is identical, column for column.
-
-**The month filter is now redundant.** The original's
-`INNER JOIN dates dt ON dt.ytd_end_dt = month_end_date` existed to pick which
-single month to append to an accumulating table. That is what dbt's incremental
-partition config does. Cell 3's join is preserved in the model, but as an
-idempotency guard rather than as load logic.
-
-**The grain reduction is the real content, and it is load-bearing.** Dropping
-those two columns and deduplicating means a contract that exists under two
-issue codes, or with one producer recorded under two roles, collapses to a
-single row. Counting contracts in `ppg_metrics_dtl` and in
-`ppg_metrics_monthly` gives different answers, by design.
-
-Two things follow:
-
-- This dedup is partially masking the producer fan-out flagged in item 4 below.
-  It collapses duplicate *roles* but not duplicate *producers*. If you turn on
-  `apply_producer_role_filter`, the role half of this dedup becomes a no-op --
-  which is the correct end state, because then the grain is explicit rather
-  than the accidental output of a `distinct`.
-- Dropping `cnt_iss_cd_nk` deserves a second look. It was half the contract key
-  in every upstream join, and then it is discarded here. That is only safe if
-  `cnt_id_nk` is unique on its own. The grain test on this model is what tells
-  you whether it is.
-
-If both were resolved, cell 3 would genuinely collapse to a view. Until then it
-is doing real work and should stay a materialized model.
-
-## Read this before running
-
-**1. `base_all` now needs a snapshot filter, and this is not optional.**
-The original read `ppg_stg_cnt_prd_mapping` with no date predicate. That was
-only safe because cell 1 did `create or replace`, so the table held exactly one
-snapshot. The mapping model is now incremental and retains history, so reading
-it unfiltered would multiply every metric by the number of retained snapshots.
-`int_metrics__base_all` filters to the run's snapshot_date. If you revert the
-mapping model to a full rebuild, that filter becomes a no-op and stays correct
-either way.
-
-**2. Two independent month-end computations.** Cell 1 anchors on
-`CURRENT_DATE` and derives `mth_begin_dt - 1`. Cell 2 anchors on
-`ADD_MONTHS(CURRENT_DATE, -1)` and reads `mth_end_dt` directly. They agree on
-every date I checked, including month-length edge cases, but nothing enforced
-that. `stg_pdm__ytd_dates` now carries a `relationships` test against
-`stg_pdm__dates.month_end_date` that fails the build if they ever diverge.
-
-**3. Planning flags were NULL, not 'N'.** In the original, the
-`pln.Completed_Plan_Dt <= base.month_end_date` predicate sits in the `LEFT JOIN`
-ON clause, so a client whose plan completed *after* the reporting month gets
-NULL for all three flags, identical to a client with no plan at all. Anything
-downstream doing `where gm_flag = 'N'` silently drops both groups. Default is
-now `coalesce(..., 'N')`; set `coalesce_planning_flags: false` to reproduce the
-original NULLs. **Check cells 3 and 4 for `= 'N'` predicates before flipping
-this either way.**
-
-**4. The producer role filters are still off.** Every
-`-- and cp.producer_cnt_role_nm = '...'` line is preserved as
-`apply_producer_role_filter: false`. Flip to `true` to activate
-`seeds/lob_producer_role.csv`. Until then the grain tests on
-`int_products__unified` and `ppg_metrics_dtl` will likely fail, which is the
-point: `select distinct` was hiding producer fan-out, and if a contract carries
-three producers in three roles you are counting it three times in the metrics.
-
-**5. `int_owners__*` partition by only `cnt_acct_id_nk`** but join downstream on
-`cnt_acct_id_nk` *and* `iss_cd_nk`. If an account id exists under two issue
-codes, one is silently dropped. Pass `partition_by_iss_cd=true` to the macro to
-fix. Left off to match today's output.
-
-**6. `dim_invest_account` join looks wrong.** The original was
-`on acc.invest_sub_acct_id_nk = prnt.invest_acct_id_nk`, a *sub*-account id
-matched to an *account* id. Preserved verbatim; worth confirming it is not meant
-to be `acc.invest_acct_id`.
-
-**7. `ppg_feebased_fp_plans_by_agent` is declared as a source** but lives in
-`prod_builder_fieldexperience.fx_test`, the same schema this pipeline writes to.
-If another notebook builds it, that notebook should become a dbt model and this
-should become a `ref()`, otherwise dbt cannot order the two correctly.
-
-**8. The depth rule is coupled to the seed by string equality.**
-`int_summ__client_breadth_depth` collapses all term products into one unit, so a
-client with five term policies and two whole life contracts has depth 3, not 7.
-It identifies term products by matching two literal `product_type` strings that
-`product_category_map.csv` emits. Rename either one in the seed and the depth
-rule silently stops collapsing -- depth jumps for every term-holding client, with
-no error. The strings now live in `var('depth_collapse_product_types')` and
-`tests/assert_depth_collapse_types_exist.sql` fails the build if the seed stops
-producing them.
-
-**9. `ytd_begin_dt` was computed in all three date CTEs and never used.**
-Cell 4's YTD filter was written as
-`YEAR(cnt_eff_dt) = YEAR(month_end_date) AND cnt_eff_dt <= month_end_date`,
-which is exactly equivalent to `cnt_eff_dt between ytd_begin_dt and ytd_end_dt`
-but wraps the column in a function so no partition can prune. `int_summ__sales`
-uses the sargable form. Same rows, less scanned.
-
-**10. Seed transcription.** `product_category_map.csv` was read off photographs.
-Diff it against the notebook before relying on it, particularly the 24-value
-LIFE `product_grp_nm` list that repeats four times in the original with small
-variations between repetitions.
-
-## Grain
-
-- `ppg_stg_cnt_prd_mapping`: one row per `snapshot_date + cnt_id_nk +
-  cnt_iss_cd_nk + producer_id_nk`
-- `ppg_metrics_dtl`: one row per `month_end_date + cnt_id_nk + cnt_iss_cd_nk +
-  producer_id_nk`
-- `ppg_metrics_monthly`: one row per `month_end_date + cnt_id_nk +
-  producer_id_nk`
-- `ppg_metrics_summ_monthly`: one row per `month_end_date`
-
-Both contract-level grains include `producer_id_nk`. If the business definition
-is one row per contract, item 4 needs resolving and the unique keys should drop
-that column, otherwise contract counts double wherever a contract has multiple
-producers.
-
-**Cell 4 partly answers the `cnt_iss_cd_nk` question from earlier.** Its depth
-calculation counts `distinct cnt_id_nk` with no issue code, and cell 3 drops the
-column entirely. Two of the four cells therefore already assume `cnt_id_nk` is
-unique on its own. If that assumption is wrong, depth is understated -- two
-contracts sharing an id under different issue codes count once. The grain test
-on `ppg_metrics_monthly` is the cheapest way to find out.
-
-Note also that the producer fan-out in item 4 does **not** reach
-`ppg_metrics_summ_monthly`: every figure there is a `count(distinct client)` or a
-`count(distinct contract)`, so duplicate producer rows collapse. The summary is
-safe; the two detail tables are the ones to check.
-
-## Historical load
-
-The commented-out `ppg_metrics_dtl_hist` union in cell 3, including its
-double-commented `>= '2025-01-01'` predicate, is preserved behind vars:
+Or without a connection to the a360 mart at all — see
+[Simulating the project](#simulating-the-project) below:
 
 ```bash
-dbt run -s ppg_metrics_monthly --full-refresh \
-  --vars '{include_historical_load: true, historical_load_from: "2025-01-01"}'
+python scripts/load_dummy_data.py          # once, to load the stand-in tables
+dbt build --vars '{use_dummy_data: true}'
 ```
 
-Run it once to fold the legacy partitions in, then set it back to false.
-Leaving it on makes every incremental run rescan the legacy table.
+To check a single piece:
+
+```bash
+dbt run  --select int_reporting_periods
+dbt show --select int_reporting_periods    # eyeball the calendar before trusting it
+dbt build --select +fct_marketer_production # the mart, its parents, and their tests
+```
+
+## Simulating the project
+
+The whole project builds against generated data, with no access to
+`prod_execution_rs` and no changes to any model:
+
+```bash
+python scripts/load_dummy_data.py          # loads 11 tables, ~900 rows
+dbt build --vars '{use_dummy_data: true}'
+```
+
+`scripts/load_dummy_data.py` creates one stand-in table per real source table,
+**with the same table name and the same column types**, in
+`<catalog>.<schema>_dummy_a360`. It reads the connection from the same `host` /
+`http_path` / `token` / `catalog` / `schema` variables the dbt profile uses, out
+of the environment or a `.env` file. `--dry-run` prints the SQL instead of
+running it; `--as-of` moves the calendar; `--schema` and `--catalog` move the
+target.
+
+`macros/source.sql` overrides dbt's built-in `source()`. With the var on, every
+`source('a360', 'x')` resolves to that dummy schema instead of the real mart —
+**only the catalog and schema change, never the table name.** Staging models are
+unchanged between modes: they say `source()`, and the macro decides what that
+means. The flag is read at parse time, so it must come from `--vars` or
+`dbt_project.yml`, not mid-run; `dummy_schema` overrides the schema if you need
+to read someone else's copy.
+
+**The stand-ins are tables, not dbt seeds.** They replace *sources*, and a
+source is something that exists before dbt runs — as seeds they would sit inside
+the DAG they are meant to stand outside of, appear in the docs as project-owned
+nodes, and get their column types from CSV inference. That last part is not
+hypothetical: inference is what turned the status code `'01'` into the integer
+`1` and produced a report where nobody was under contract (see
+[Testing](#testing)). The loader declares every type in DDL, so the codes are
+`string` because the schema says so.
+
+The generator produces 32 marketers in six recruiting downlines, with dates
+computed **relative to the as-of date** (default today). Relative rather than
+fixed because the report's buckets are current week, prior week and month to
+date; hardcoded dates would fall out of every one of those within days and the
+buckets would silently read zero. The random seed is fixed, so a reload on the
+same day reproduces the same rows.
+
+The data is shaped to exercise the logic rather than to look pretty. Two of the
+six recruiters are unreportable — one holds a title absent from
+`reportable_titles`, one a dashboard status absent from
+`reportable_dashboard_status_codes` — so both downlines should vanish from the
+mart. Some marketers are terminated, some are inside their first six months,
+and non-life products exist so the `'LF'` filter has something to remove. On the
+current data, 32 marketers become 22 rows under 4 recruiters.
+
+`scripts/generate_dummy_data.py` holds the generation logic and the table
+definitions. Run it directly to print what would be loaded; it never touches the
+warehouse.
+
+Two cautions. `dbt source freshness` reads the source config directly and never
+calls the macro, so do not run it in simulated mode. And the two modes should
+not share a target schema — the stand-ins are isolated in their own schema, but
+the models built on top of them are not.
+
+## Testing
+
+`dbt build --vars '{use_dummy_data: true}'` currently runs 143 tests, all
+passing. The interesting ones are not the `not_null`s:
+
+| Test | What it protects |
+|---|---|
+| `assert_single_reporting_period` | The calendar is exactly one row. Two rows doubles every measure in the mart; zero rows empties it. Neither raises an error on its own. |
+| `assert_fyc_ties_to_source` | Per-marketer reconciliation from the mart back to the raw daily table, past six joins and the bucketing macro. |
+| `assert_report_is_not_vacuous` | Catches joins that resolve to nothing — see below. |
+| `mutually_exclusive_ranges` on both type-2 models | Overlapping windows make the point-in-time class lookup return the wrong row rather than fail. |
+| `unique` on `stg_a360__marketer_appointment.mktr_no` | The fan-out the original's `select distinct` was hiding, tested at the layer where it originates. |
+| `equal_rowcount` between load control and the calendar | One row in, one row out. |
+
+**Why `assert_report_is_not_vacuous` exists.** During the first simulated build,
+the status codes were inferred from CSV as integers, so `01` arrived as `1` and
+the join to `active_status_codes` matched nothing. Every marketer came
+out with a null contract, every `active_*` flag came out `0`, and every
+six-month flag came out `'N'`. **All 181 tests passed.** `not_null`, `unique`,
+`accepted_values` and `relationships` are all perfectly satisfied by a column
+that is uniformly wrong in the empty direction, and a left join turns a missing
+match into a null rather than an error. A report claiming zero active marketers
+is never right, and it is the kind of wrong that gets published rather than
+noticed — so it is now asserted directly, alongside `at_least_one` on the models
+that feed it. The underlying cause is fixed twice over: the stand-in tables
+declare their types in DDL rather than inferring them, and the code seeds pin
+`status_cd` to `string` in `dbt_project.yml`.
+
+Severities are deliberate. Tests that mean *the numbers are wrong* are errors.
+Tests that mean *the source has changed shape and someone should look* — an
+unlabelled class code, a title code missing from the lookup — are warnings.
+Anything comparing commission across periods is a warning too, because
+chargebacks make commission legitimately negative; the equivalent case-count
+tests are errors, because case counts cannot be.
+
+`store_failures` is off by default: it materialises one table per test, and 143
+of them exceeds Unity Catalog's 100-table-per-schema limit. Turn it on for what
+you are investigating instead:
+
+```bash
+dbt test --store-failures --select fct_marketer_production
+```
+
+## What changed, and why
+
+**The five period buckets are now a macro.** `macros/period_buckets.sql` writes
+the `sum(case when ... then ... end)` block once. FYC and paid cases both call
+it, so the two can no longer drift apart — which is the failure mode when the
+same ten lines are copy-pasted.
+
+**Magic lists moved to seeds.** Status codes, titles, and the recruiter status
+filter were hardcoded `IN` lists scattered through the original — the active
+status list appeared twice, on lines 71–73 and again on 169–171, with no
+guarantee the two stayed in sync. They are CSVs in `seeds/` now:
+
+| Seed | Replaces |
+|---|---|
+| `active_status_codes.csv` | lines 71–73 and 169–171 |
+| `reportable_titles.csv` | line 178 |
+| `reportable_dashboard_status_codes.csv` | line 179 |
+| `marketer_class_labels.csv` | the CASE block, lines 120–127 |
+
+Models filter by joining to the seed rather than by an `IN` list. An inner join
+to a lookup table *is* a filter — only rows with a matching code survive.
+
+Seeds rather than `vars` because a code list is business data, not project
+configuration. It can be queried, tested, given a description column, and
+reviewed in a pull request by someone who doesn't read YAML. `dbt_project.yml`
+stays untouched when the business adds a status code.
+
+The descriptions in `active_status_codes.csv` are placeholders — confirm the
+real ones with the business owner and correct that file.
+
+**`limit 10` removed.** It was a testing leftover on line 182.
+
+**`select distinct` removed.** Distinct was hiding a possible fan-out from the
+join to marketer history. There is now a `unique` test on `mktr_no` in the mart
+instead, so a duplicate fails the run rather than silently disappearing.
+
+**`current_date` replaced with `cur_dt`.** Lines 112–113 of the original used
+`current_date` while everything else used the load date. On a late or re-run
+load those disagree.
+
+**Singular data tests added.** `assert_single_reporting_period` guards the cross
+join — if the calendar ever returns two rows, every fact doubles.
+`assert_fyc_ties_to_source` checks the mart's YTD commission against the raw
+daily table, which is the check the comment on line 167 was worried about.
+`assert_report_is_not_vacuous` catches the joins-to-nothing failure described
+under [Testing](#testing). Every model and column is documented in the
+`_*.yml` files alongside them.
+
+## Five things to confirm before you trust the output
+
+1. **Lines 84–85 of the original are self-referential.**
+   `a.start_6mo between a.start_6mo and d.prv_Month_EndDate` — the lower bound
+   compares a column to itself, so half the condition does nothing. I've written
+   it as `d.prv_me between a.start_6mo and a.end_6mo`, which is what the flag
+   name implies. Verify against the report spec.
+
+2. **The manpower table was joined twice on the same key** (`mp` and `mpr`, both
+   `on mktr_no = dash.mktr_no`) to produce `prorata` and `prior_prorata`. With no
+   distinguishing filter, those two columns always held identical values. Only
+   one join is kept. If `prior_prorata` is meant to be last month's snapshot, it
+   needs a date predicate — that predicate does not exist in the original.
+
+3. **`active_mtd` and `active_ytd` were identical** in the original (both test
+   `cur_dt`). Preserved as-is, but likely a copy-paste slip.
+
+4. **The `LF` product filter sits in a WHERE clause after a LEFT JOIN,** which
+   turns it into an inner join. Preserved deliberately, and flagged in the model
+   comments. If unmatched products should survive, move it into the ON clause.
+
+5. **Titles are matched on `initcap()`'d display text,** carried over from line
+   178. That means a title stored as "MANAGING PARTNER " with a trailing space,
+   or renamed to "Managing Partner (Field)", silently drops those marketers from
+   the report with no error. Matching on `mk_ttl_tp_cd` instead would be robust;
+   swap `reportable_titles.csv` for a list of codes once you can look them up.
+
+## Where to go next
+
+`int_reporting_periods` cross-joined everywhere is a faithful translation, but
+the more idiomatic dbt pattern is a **date spine**: one row per date with period
+flags, aggregate long, then pivot. That makes adding a sixth period (QTD, say) a
+one-row change instead of an edit to two models and a macro. Worth doing once
+this version is verified to tie out against the current report.

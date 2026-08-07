@@ -1,191 +1,220 @@
 version: 2
 
 models:
-  - name: ppg_stg_cnt_prd_mapping
-    description: >
-      One row per in-scope contract or investment account per snapshot date,
-      with product categorisation attached. Feeds ppg_metrics_dtl.
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          arguments:
-            combination_of_columns:
-              - snapshot_date
-              - cnt_id_nk
-              - cnt_iss_cd_nk
-              - producer_id_nk
-    columns:
-      - name: snapshot_date
-        tests: [not_null]
-      - name: cnt_id_nk
-        tests: [not_null]
-      - name: lob_nm
-        tests:
-          - accepted_values:
-              arguments:
-                values:
-                  - LIFE INSURANCE
-                  - ANNUITIES
-                  - LONG TERM CARE
-                  - IDI
-                  - EAGLE
-                  - NYLIFE SEC
-                  - MAINSTAY
-                  - NP MUTFNDS
-                  - NP529
-      - name: product_type
-        tests: [not_null]
-      - name: product_category_risk_wm
-        tests:
-          - accepted_values:
-              arguments:
-                values: ['Risk Management', 'Wealth Management']
 
-  - name: ppg_metrics_dtl
+  - name: fct_marketer_production
     description: >
-      Contract-level detail for the reporting month, filtered to contracts whose
-      primary owner was an active policy owner at month end.
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          arguments:
-            combination_of_columns:
-              - month_end_date
-              - cnt_id_nk
-              - cnt_iss_cd_nk
-              - producer_id_nk
-      - dbt_utils.expression_is_true:
-          description: >
-            risk_management_ind and wealth_management_ind are derived from the
-            same column and are mutually exclusive by construction. If both are
-            'N' a new value has appeared in product_category_risk_wm.
-          arguments:
-            expression: "not (risk_management_ind = 'N' and wealth_management_ind = 'N')"
-    columns:
-      - name: month_end_date
-        tests: [not_null]
-      - name: cnt_id_nk
-        tests: [not_null]
-      - name: primry_ownr_cl_id
-        tests: [not_null]
-      - name: gm_flag
-        tests:
-          - accepted_values:
-              arguments:
-                values: ['Y', 'N']
-      - name: fp_flag
-        tests:
-          - accepted_values:
-              arguments:
-                values: ['Y', 'N']
-      - name: gm_or_fp_flag
-        tests:
-          - accepted_values:
-              arguments:
-                values: ['Y', 'N']
+      One row per marketer: who they are, where they sit in the org, and what
+      they produced across the five reporting periods (prior-month-end YTD, YTD,
+      MTD, current week, prior week).
 
-  - name: ppg_metrics_monthly
-    description: >
-      ppg_metrics_dtl reduced to contract-and-producer grain: cnt_iss_cd_nk and
-      producer_cnt_role_nm are dropped and the result deduplicated. Accumulates
-      one partition per reporting month. Feeds ppg_metrics_summ_monthly.
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          description: >
-            Tighter than the dtl grain because two key columns were dropped. A
-            failure here means either one cnt_id_nk exists under two issue codes
-            with different cnt_eff_dt, or one contract carries several
-            producer_id_nk. Both are real modelling questions, not test noise.
-          arguments:
-            combination_of_columns:
-              - month_end_date
-              - cnt_id_nk
-              - producer_id_nk
-      - dbt_utils.equal_rowcount:
-          description: >
-            Monthly should never contain rows dtl does not. It may legitimately
-            contain FEWER after the dedup, so this is a warning, not an error.
-          arguments:
-            compare_model: ref('ppg_metrics_dtl')
-          config:
-            severity: warn
+      This is the replacement for the final SELECT of FOD_query.sql. The
+      marketer's identity columns describe their RECRUITER, not themselves --
+      the report is a recruiter-level view, which is why the dashboard table is
+      self-joined. Read the README's "four things to confirm" section before
+      treating any of these numbers as authoritative.
+    config:
+      contract:
+        enforced: false
     columns:
-      - name: month_end_date
-        tests: [not_null]
-      - name: cnt_id_nk
-        tests: [not_null]
-      - name: primry_ownr_cl_id
-        tests: [not_null]
-      - name: gm_or_fp_flag
-        tests:
-          - accepted_values:
-              arguments:
-                values: ['Y', 'N']
 
-  - name: ppg_metrics_summ_monthly
-    description: >
-      One row per reporting month: YTD sales penetration plus multi-product
-      breadth and depth. Reads ppg_metrics_dtl directly, not
-      ppg_metrics_monthly.
-    columns:
-      - name: month_end_date
-        tests: [not_null, unique]
-      - name: total_sales
-        tests: [not_null]
-      - name: plan_sales
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }} Here, the producing marketer.'
+        data_tests:
+          - not_null
+          - unique:
+              description: >
+                The grain, and the test that replaced the original `select
+                distinct`. A duplicate here means one of the joins has fanned
+                out -- almost certainly appointment history or contract status.
+                Fix the join; do not re-add the distinct.
+      - name: rel_mktr_no
+        description: The recruiting marketer whose name, title and office appear on the row.
+        data_tests: [not_null]
+      - name: abreviated_nm
+        description: Recruiter's short display name.
+      - name: mk_fst_nm
+        description: Recruiter's first name.
+      - name: mk_lst_nm
+        description: Recruiter's last name.
+      - name: title_nm
+        description: Recruiter's title. Always one of the reportable_titles seed values.
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('reportable_titles')
+                field: title_nm
+      - name: general_office_nm
+        description: Recruiter's general office.
+        data_tests: [not_null]
+      - name: zone_nm
+        description: Recruiter's zone.
+        data_tests: [not_null]
+
+      - name: mk_cls_tp_cd
+        description: The producer's current class code, from the dashboard dimension.
+      - name: class_label
         description: >
-          Distinct clients with a GM or FP plan. Cannot exceed total_sales.
-        tests: [not_null]
-      - name: ppg_sales
-        description: Percentage, 0-100.
-        tests:
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 0
-                max_value: 100
-                inclusive: true
-      - name: gm_led_sales
-        tests:
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 0
-                max_value: 100
-                inclusive: true
-      - name: fb_led_sales
-        tests:
-          - dbt_utils.accepted_range:
-              arguments:
-                min_value: 0
-                max_value: 100
-                inclusive: true
-      - name: multi_product_breadth
+          Display label for mk_cls_tp_cd, from the marketer_class_labels seed.
+          Null means a class code with no label -- warned about in staging.
+
+      - name: orig_appt_dt
+        description: Original appointment date.
+        data_tests: [not_null]
+      - name: contract_end_dt
         description: >
-          Mean distinct need-based categories per active client. Below 1.0 would
-          mean a client counted in the denominator contributed no categories.
-        tests:
+          Contract end date, sentinel resolved. Null means no active contract
+          row for the reporting month, which is legitimate for a terminated
+          marketer who still has production earlier in the year.
+      - name: start_6mo
+        description: First day of the month the marketer was appointed in.
+        data_tests: [not_null]
+      - name: end_6mo
+        description: Month end, six months after appointment.
+        data_tests: [not_null]
+
+      - name: prorata
+        description: 1 if the marketer counts pro rata toward headcount, else 0.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false
+      - name: count_active
+        description: Manpower active-headcount flag. Null where there is no manpower row.
+
+      - name: fyc_me
+        description: First-year commission, year to date through the end of the prior month.
+        data_tests: [not_null]
+      - name: fyc_ytd
+        description: First-year commission, year to date through the as-of date.
+        data_tests: [not_null]
+      - name: fyc_mtd
+        description: First-year commission, current month to the as-of date.
+        data_tests: [not_null]
+      - name: fyc_cw
+        description: First-year commission, current week.
+        data_tests: [not_null]
+      - name: fyc_pw
+        description: First-year commission, prior week.
+        data_tests: [not_null]
+
+      - name: cases_me
+        description: Paid life cases, year to date through the end of the prior month.
+        data_tests:
+          - not_null
           - dbt_utils.accepted_range:
               arguments:
-                min_value: 1
+                min_value: 0
                 inclusive: true
-              config:
-                severity: warn
-      - name: multi_product_depth
-        tests:
+      - name: cases_ytd
+        description: Paid life cases, year to date through the as-of date.
+        data_tests:
+          - not_null
           - dbt_utils.accepted_range:
               arguments:
-                min_value: 1
+                min_value: 0
                 inclusive: true
-              config:
-                severity: warn
-    tests:
+      - name: cases_mtd
+        description: Paid life cases, current month to the as-of date.
+        data_tests: [not_null]
+      - name: cases_cw
+        description: Paid life cases, current week.
+        data_tests: [not_null]
+      - name: cases_pw
+        description: Paid life cases, prior week.
+        data_tests: [not_null]
+
+      - name: cw_class
+        description: Class code as at the start of the current week.
+      - name: pw_class
+        description: Class code as at the start of the prior week.
+      - name: prvme_class
+        description: Class code as at the end of the prior month.
+      - name: cur_class
+        description: Class code as at the as-of date.
+
+      - name: cur_dt
+        description: >
+          The as-of date the whole row was built against. Constant across the
+          table -- carried so a consumer can tell which run they are reading.
+        data_tests: [not_null]
+
+      - name: prevmonthflg_sixmth
+        description: >
+          'Y' if the marketer was inside their first six months, and still under
+          contract, at the end of the prior month.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+      - name: currmonthflg_sixmth
+        description: Same test, evaluated at the current month end.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+
+      - name: active_prvme
+        description: 1 if actively contracted at the end of the prior month.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [0, 1], quote: false}
+      - name: active_mtd
+        description: >
+          1 if actively contracted on the as-of date. NOTE: identical to
+          active_ytd by construction -- both test cur_dt. Preserved from the
+          original, which is very likely a copy-paste slip. See the README.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [0, 1], quote: false}
+      - name: active_ytd
+        description: Identical to active_mtd. See above.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [0, 1], quote: false}
+      - name: active_cw
+        description: 1 if actively contracted at the start of the current week.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [0, 1], quote: false}
+      - name: active_pw
+        description: 1 if actively contracted at the start of the prior week.
+        data_tests:
+          - accepted_values:
+              arguments: {values: [0, 1], quote: false}
+
+    data_tests:
       - dbt_utils.expression_is_true:
-          description: Plan sales is a subset of total sales.
+          description: The six-month window must end after it starts.
           arguments:
-            expression: "plan_sales <= total_sales"
+            expression: "end_6mo > start_6mo"
       - dbt_utils.expression_is_true:
           description: >
-            Depth counts contracts, breadth counts categories. A client cannot
-            span more categories than they hold contracts, so depth >= breadth
-            at the aggregate level too.
+            active_mtd and active_ytd are the same expression in the source
+            model. This test exists to FAIL the day someone fixes one of them
+            without reading the README -- at which point delete the test along
+            with the note on active_mtd.
           arguments:
-            expression: "depth_val >= breadth_val"
-          config:
-            severity: warn
+            expression: "active_mtd = active_ytd"
+      - dbt_utils.expression_is_true:
+          description: Case counts are non-negative, so YTD contains MTD.
+          arguments:
+            expression: "cases_mtd <= cases_ytd"
+      - dbt_utils.expression_is_true:
+          description: >
+            Every marketer on the report is inside their recruiter's downline,
+            and a marketer cannot produce before being appointed.
+          arguments:
+            expression: "orig_appt_dt <= cur_dt"
+      - dbt_utils.fewer_rows_than:
+          description: >
+            The report is a filtered subset of the dashboard dimension -- by
+            title, by dashboard status, and by having an appointment record. It
+            can never have more rows than the dimension it filters.
+          arguments:
+            compare_model: ref('stg_a360__marketer_dashboard')

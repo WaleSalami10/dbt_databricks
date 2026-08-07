@@ -1,5 +1,16 @@
-
-dbt_internal_packages/
-.env
+# dbt
 target/
 logs/
+dbt_packages/
+dbt_internal_packages/
+
+# Credentials. The profile reads these from the environment.
+.env
+
+# Editor / tooling
+.databricks/
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

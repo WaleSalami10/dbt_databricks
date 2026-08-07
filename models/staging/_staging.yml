@@ -1,40 +1,312 @@
 version: 2
 
 models:
-  - name: stg_pdm__dates
-    columns:
-      - name: snapshot_date
-        tests: [not_null, unique]
-      - name: month_end_date
-        tests: [not_null]
 
-  - name: stg_pdm__ytd_dates
+  - name: stg_a360__load_control
     description: >
-      YTD window for the reporting month. Exactly one row per run.
+      ONE ROW: the date the report is as of, taken from the A360 / MK_DAILY
+      feed's load date (or pinned by the `snapshot_date` var on a backfill).
+      Everything in the project ultimately anchors on this value, so a fault
+      here is a fault everywhere -- hence the row-count test.
     columns:
-      - name: ytd_end_dt
-        tests:
+      - name: load_dt
+        description: The report's as-of date. Never current_date.
+        data_tests:
+          - not_null:
+              description: >
+                Null means the MK_DAILY feed row is missing from load control.
+                The calendar would then be entirely null and every period
+                bucket would come back empty rather than wrong, which is worse.
+    data_tests:
+      - dbt_utils.equal_rowcount:
+          description: One row in, one row out. The whole calendar depends on it.
+          arguments:
+            compare_model: ref('int_reporting_periods')
+
+  - name: stg_a360__daily_fyc
+    description: >
+      Daily first-year commission. One row per marketer per day, unfiltered --
+      int_fyc_by_marketer applies the year window and the period bucketing.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: fyc_dt
+        description: Transaction date the commission is bucketed by.
+        data_tests: [not_null]
+      - name: fyc_amt
+        description: >
+          First-year commission. Can legitimately be negative -- a chargeback
+          reverses a prior payment -- so there is no positive-value test here.
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          description: >
+            The documented grain. If this fails the source has started issuing
+            multiple rows per marketer per day; the sums downstream still work,
+            but the freshness assumption and any per-day reconciliation do not.
+          arguments:
+            combination_of_columns: [mktr_no, fyc_dt]
+
+  - name: stg_a360__daily_paid_cases
+    description: >
+      Daily paid cases and premium. One row per marketer per day per product.
+      The life-product filter is applied downstream, in
+      int_paid_cases_by_marketer, because the product line lives on the product
+      dimension rather than on this table.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: product_cd
+        description: '{{ doc("product_cd") }}'
+        data_tests:
           - not_null
-          - unique
           - relationships:
               description: >
-                Guards the two independent month-end computations described in
-                the model header. If this fails, cell 1 and cell 2 have drifted
-                onto different months and every downstream count is wrong.
+                A case whose product is missing from the dimension is dropped by
+                the inner join in int_paid_cases_by_marketer -- silently, and
+                only from the life-product counts. This test is the alarm.
               arguments:
-                to: ref('stg_pdm__dates')
-                field: month_end_date
-      - name: ytd_begin_dt
-        tests: [not_null]
-      - name: ytd_end_dim_sqn
-        tests: [not_null]
+                to: ref('stg_a360__product')
+                field: product_cd
+      - name: paid_dt
+        description: Paid date. The date a case is bucketed by.
+        data_tests: [not_null]
+      - name: cases_qty
+        description: Number of paid cases.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+      - name: premium_amt
+        description: Carried through for completeness; the report does not use it.
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: [mktr_no, paid_dt, product_cd]
 
-  - name: stg_crm__sf_account
+  - name: stg_a360__product
+    description: Product dimension, one row per product code.
     columns:
-      - name: case_cl_id
-        tests: [not_null]
+      - name: product_cd
+        description: '{{ doc("product_cd") }}'
+        data_tests: [not_null, unique]
+      - name: product_line_cd
+        description: >
+          Product line, upper-cased. 'LF' is the life line, the only one the
+          paid-case counts include.
+        data_tests: [not_null]
+      - name: product_nm
+        description: Product display name. Not used by the report.
 
-  - name: stg_metrics__policy_owner
+  - name: stg_a360__class_history
+    description: >
+      Marketer class history. Type-2: one row per marketer per class, valid
+      between class_valid_from and class_valid_to inclusive.
     columns:
-      - name: po_client_id_nk
-        tests: [not_null]
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: class_cd
+        description: Class code, labelled by the marketer_class_labels seed.
+        data_tests:
+          - not_null
+          - relationships:
+              description: >
+                An unlabelled class code shows as a null label on the report
+                rather than as an error, so this test is the only warning.
+              arguments:
+                to: ref('marketer_class_labels')
+                field: class_cd
+              config:
+                severity: warn
+      - name: class_valid_from
+        description: '{{ doc("valid_from") }}'
+        data_tests: [not_null]
+      - name: class_valid_to
+        description: >
+          Inclusive. Open-ended rows carry 9999-12-31 rather than null, which is
+          what lets the point-in-time BETWEEN in int_class_by_marketer work
+          without a coalesce.
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.expression_is_true:
+          description: A window that ends before it starts matches nothing, silently.
+          arguments:
+            expression: "class_valid_to >= class_valid_from"
+      - dbt_utils.mutually_exclusive_ranges:
+          description: >
+            int_class_by_marketer picks a class with max(case when date between
+            from and to). If two windows for one marketer overlap, that max()
+            returns the higher class code rather than the correct one -- a wrong
+            answer, not an error. Gaps are allowed; a marketer can have periods
+            with no class on record.
+          arguments:
+            lower_bound_column: class_valid_from
+            upper_bound_column: class_valid_to
+            partition_by: mktr_no
+            gaps: allowed
+
+  - name: stg_a360__marketer_status
+    description: >
+      Marketer contract-status history. Type-2, same shape as class history. The
+      9999 open-ended sentinel is exposed both raw (as text) and resolved to a
+      9999-12-31 timestamp -- see the model header for why both.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: status_cd
+        description: >
+          Contract status. The active_status_codes seed decides which values
+          count as active; both int_class_by_marketer and int_marketer_contract
+          filter through that one seed, so they cannot disagree.
+        data_tests: [not_null]
+      - name: status_valid_from
+        description: '{{ doc("valid_from") }}'
+        data_tests: [not_null]
+      - name: status_valid_to_raw
+        description: The source end date, untouched. May contain the 9999 sentinel.
+        data_tests: [not_null]
+      - name: status_valid_to
+        description: status_valid_to_raw as a timestamp, sentinel resolved to 9999-12-31.
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "status_valid_to >= status_valid_from"
+      - dbt_utils.mutually_exclusive_ranges:
+          description: >
+            Overlapping status windows would let one marketer be both active and
+            terminated on the same date, which int_marketer_contract would turn
+            into two contract rows and the mart into a duplicated marketer.
+          arguments:
+            lower_bound_column: status_valid_from
+            upper_bound_column: status_valid_to
+            partition_by: mktr_no
+            gaps: allowed
+
+  - name: stg_a360__marketer_dashboard
+    description: >
+      Marketer dashboard dimension, one row per marketer. Joined to itself in
+      the mart: rel_mktr_no points at the recruiting marketer, and it is the
+      recruiter's name, title and office the report is grouped by.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null, unique]
+      - name: rel_mktr_no
+        description: The recruiting marketer.
+        data_tests:
+          - not_null
+          - relationships:
+              description: >
+                The mart's self-join is an inner join, so a marketer pointing at
+                a recruiter who does not exist drops off the report entirely.
+              arguments:
+                to: ref('stg_a360__marketer_dashboard')
+                field: mktr_no
+      - name: mk_cls_tp_cd
+        description: >
+          Current class code, used for the class LABEL on the report. Distinct
+          from the point-in-time class codes in int_class_by_marketer.
+      - name: mk_ttl_tp_cd
+        description: Title code.
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('stg_a360__title_type')
+                field: mk_ttl_tp_cd
+              config:
+                severity: warn
+      - name: mk_sts_tp_cd
+        description: >
+          Dashboard status, filtered against reportable_dashboard_status_codes.
+          Deliberately a different list from the contract statuses in
+          active_status_codes.
+      - name: alt_org_unit_cd
+        description: Org unit, resolved to office and zone via stg_a360__org_zone.
+        data_tests:
+          - relationships:
+              description: >
+                Another inner join in the mart. An unmapped org unit removes
+                that recruiter's whole downline from the report.
+              arguments:
+                to: ref('stg_a360__org_zone')
+                field: org_unit_cd
+              config:
+                severity: warn
+      - name: abreviated_nm
+        description: Short display name. Source spelling, kept on purpose.
+      - name: mk_fst_nm
+        description: Marketer's first name.
+      - name: mk_lst_nm
+        description: Marketer's last name.
+
+  - name: stg_a360__marketer_appointment
+    description: >
+      Original appointment date per marketer. Expected to be one row per
+      marketer -- see the model header for what to do if it stops being that.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests:
+          - not_null
+          - unique:
+              description: >
+                The mart inner-joins this on mktr_no, so a second row per
+                marketer doubles that marketer's row and every measure on it.
+                This is the test the removed `select distinct` used to hide.
+      - name: orig_appt_dt
+        description: >
+          Drives the six-month new-agent window and the active-on-date flags.
+        data_tests: [not_null]
+
+  - name: stg_a360__org_zone
+    description: General office and zone lookup, one row per org unit.
+    columns:
+      - name: org_unit_cd
+        description: '{{ doc("org_unit_cd") }}'
+        data_tests: [not_null, unique]
+      - name: general_office_nm
+        description: General office name, as shown on the report.
+        data_tests: [not_null]
+      - name: zone_nm
+        description: Zone name, as shown on the report.
+        data_tests: [not_null]
+
+  - name: stg_a360__title_type
+    description: >
+      Job title lookup. title_nm is initcap()'d because the report matches
+      titles on display text rather than on the code -- see the model header.
+    columns:
+      - name: mk_ttl_tp_cd
+        description: '{{ doc("title_cd") }}'
+        data_tests: [not_null, unique]
+      - name: title_nm
+        description: Initcap'd display text. Matched against the reportable_titles seed.
+        data_tests: [not_null, unique]
+
+  - name: stg_a360__manpower
+    description: Manpower / headcount flags, one row per marketer.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null, unique]
+      - name: pro_rata_ind
+        description: 1 if the marketer counts pro rata toward headcount.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false
+      - name: count_active
+        description: 1 if the marketer counts toward active headcount.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false

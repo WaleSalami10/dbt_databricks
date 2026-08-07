@@ -1,0 +1,159 @@
+version: 2
+
+sources:
+  - name: a360
+    description: >
+      Agency 360 mart, landed by the upstream EDW load. Every table here is
+      read-only from dbt's point of view.
+
+      When the `use_dummy_data` var is true, `macros/source.sql` redirects every
+      one of these tables to a generated seed instead -- see the README. The
+      freshness checks below are meaningless in that mode and should not be run.
+    database: prod_execution_rs
+    schema: ext_agy_a360_mart
+
+    tables:
+      - name: orap10_data_src_load_ctrl
+        description: >
+          Load-control table. One row per (target system, data feed) telling us
+          the date the feed was last loaded. This is the source of truth for
+          "as of when" the whole report is built.
+        config:
+          loaded_at_field: ld_dt
+          freshness:
+            warn_after: {count: 30, period: hour}
+            error_after: {count: 48, period: hour}
+        columns:
+          - name: tgt_sys_cd
+            description: Target system. The report reads the 'A360' rows.
+          - name: src_feed_nm
+            description: Feed name. The report reads the 'MK_DAILY' feed.
+          - name: ld_dt
+            description: Date the feed last landed. The report's as-of date.
+
+      - name: orap10_mk_daly_fyc_join_mv
+        description: Daily first-year-commission summary, one row per marketer per day.
+        config:
+          loaded_at_field: fyc_dt
+          freshness:
+            warn_after: {count: 48, period: hour}
+            error_after: {count: 96, period: hour}
+        columns:
+          - name: mktr_no
+            description: Marketer number. Joins to orap10_mk_dashbrd.
+          - name: fyc_dt
+            description: Transaction date the commission is bucketed by.
+          - name: fyc_amt
+            description: First-year commission amount.
+
+      - name: orap10_mk_daly_ctcp_prm_smy
+        description: >
+          Daily paid-case / premium summary, one row per marketer per day per
+          product.
+        columns:
+          - name: mktr_no
+          - name: ctcp_paid_dt
+            description: Paid date the case is bucketed by.
+          - name: alt_prdt_cd
+            description: Product code. Joins to orap10_dash_alt_prdt_mv.
+          - name: ctcp_case_cnt
+            description: Number of paid cases.
+          - name: ctcp_prm_amt
+            description: Premium amount. Carried through staging but unused by the report.
+
+      - name: orap10_dash_alt_prdt_mv
+        description: Product dimension. Used to filter paid cases to life products.
+        columns:
+          - name: alt_prdt_cd
+            description: Product code, unique.
+          - name: alt_prdt_line_cd
+            description: Product line. 'LF' is life, which is all the report counts.
+          - name: alt_prdt_nm
+
+      - name: orap10_mk_cls_hist
+        description: >
+          Slowly-changing history of a marketer's class (career level), with
+          mk_cls_edt / mk_cls_xdt marking the effective window of each row.
+        columns:
+          - name: mktr_no
+          - name: mk_cls_tp_cd
+            description: Class code. Labelled by the marketer_class_labels seed.
+          - name: mk_cls_edt
+            description: Window start, inclusive.
+          - name: mk_cls_xdt
+            description: Window end, inclusive.
+
+      - name: orap10_mk_sts_atv
+        description: >
+          Marketer contract status history, with mk_sts_atv_edt / mk_sts_atv_xdt
+          marking the effective window. An xdt containing 9999 means "open ended".
+        columns:
+          - name: mktr_no
+          - name: mk_sts_tp_cd
+            description: >
+              Contract status. The active_status_codes seed decides which of
+              these count as active.
+          - name: mk_sts_atv_edt
+            description: Window start, inclusive.
+          - name: mk_sts_atv_xdt
+            description: >
+              Window end, inclusive. Contains a 9999 sentinel for open-ended
+              contracts, which is why staging keeps it as text as well as a
+              timestamp.
+
+      - name: orap10_mk_dashbrd
+        description: >
+          Marketer dashboard dimension. Note this table is joined to itself in the
+          original query: rel_mktr_no points at the related (recruiting) marketer.
+        columns:
+          - name: mktr_no
+            description: Marketer number, unique.
+          - name: rel_mktr_no
+            description: >
+              The related (recruiting) marketer. The report is grouped by this
+              marketer's name, title and office.
+          - name: mk_cls_tp_cd
+          - name: mk_ttl_tp_cd
+            description: Title code. Joins to orap10_mk_ttl_tp.
+          - name: mk_sts_tp_cd
+            description: >
+              Dashboard status. Filtered by the
+              reportable_dashboard_status_codes seed.
+          - name: alt_org_unit_cd
+            description: Org unit. Joins to orap10_cur_go_zone.
+          - name: abreviated_nm
+            description: Short display name. Source spelling kept deliberately.
+          - name: mk_fst_nm
+          - name: mk_lst_nm
+
+      - name: orap10_mk_history
+        description: Marketer history, source of the original appointment date.
+        columns:
+          - name: mktr_no
+          - name: orig_appt_dt
+            description: >
+              Original appointment date. Drives the six-month new-agent window
+              and every "actively contracted on date X" flag in the mart.
+
+      - name: orap10_cur_go_zone
+        description: General office and zone lookup.
+        columns:
+          - name: org_unit_cd
+          - name: go_nm
+          - name: zone_nm
+
+      - name: orap10_mk_ttl_tp
+        description: Job title lookup.
+        columns:
+          - name: mk_ttl_tp_cd
+          - name: mk_ttl_tp_dsc
+            description: >
+              Display text. The report matches the reportable-title list against
+              an initcap() of this, not against the code -- see the README.
+
+      - name: orap10_mk_manpower
+        description: Manpower / headcount flags, including pro-rata indicators.
+        columns:
+          - name: mktr_no
+          - name: pro_rata_ind
+          - name: cnt_atv_ind
