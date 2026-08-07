@@ -26,7 +26,7 @@ with dtl as (
 
     {% if not flags.FULL_REFRESH %}
     -- Restrict to the reporting month, exactly as the original did.
-    where month_end_date = (select ytd_end_dt from {{ ref('stg_pdm__ytd_dates') }})
+    where month_end_date = (select month_end_date from {{ ref('stg_pdm__dates') }})
     {% endif %}
 
 ),

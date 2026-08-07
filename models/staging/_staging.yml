@@ -14,22 +14,13 @@ models:
           When PDM was observed, not what is being reported. Audit only.
         tests: [not_null]
       - name: ytd_begin_dt
+        description: >
+          1 January of the reporting year. The only genuinely YTD-specific
+          date -- the other end of the YTD window is just month_end_date, which
+          is why there is no ytd_end_dt.
         tests: [not_null]
       - name: month_end_dim_sqn
-        tests: [not_null]
-
-  - name: stg_pdm__ytd_dates
-    description: >
-      Renaming view over stg_pdm__dates for the models that read ytd_end_dt.
-      This used to be an independent second computation of the month end; the
-      relationships test that guarded the two against drifting is gone because
-      there is now only one computation to drift from.
-    columns:
-      - name: ytd_end_dt
-        tests: [not_null, unique]
-      - name: ytd_begin_dt
-        tests: [not_null]
-      - name: ytd_end_dim_sqn
+        description: month_end_date as yyyyMMdd, to join the policy-owner fact.
         tests: [not_null]
 
   - name: stg_pdm__contracts

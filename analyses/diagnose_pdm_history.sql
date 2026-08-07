@@ -8,7 +8,7 @@
 -- Paste into a Databricks SQL editor or notebook and run the statements in
 -- order. This lives in analyses/ so dbt compiles it but never executes it.
 --
--- Steps 1, 2 and 6 are the decisive ones. Do those first.
+-- Step 2 is the decisive one -- steps 1, 3b and 3c are already answered inline.
 
 
 -- ===========================================================================
@@ -41,8 +41,8 @@ select current_timezone() as session_tz;
 -- RECORD validity timestamps -- when this version of the row was true -- which
 -- is the kind that reconstructs history, not business dates like cnt_eff_dt.
 --
--- They are already set as pdm_eff_col / pdm_exp_col in dbt_project.yml, so
--- scd2 mode is wired and ready. It is NOT yet proven: see step 2.
+-- They are already set as pdm_eff_col / pdm_exp_col in macros/ppg_config.sql,
+-- so scd2 mode is wired and ready. It is NOT yet proven: see step 2.
 --
 -- Re-run the query below only if the PDM schema changes.
 
@@ -260,10 +260,9 @@ order by 2 desc;
 -- macros/pdm_as_of.sql accordingly.
 --
 -- This matters more than it looks. Time travel was the only option that needed
--- no modelling work AND could reach backwards. Without it there are exactly
--- two outcomes: the source is Type 2 (steps 1-3) and everything is
--- recoverable, or it is not and history begins the first time you run
--- `dbt snapshot`. Nothing recovers a month that has already passed.
+-- no modelling work AND could reach backwards. Its absence is what makes
+-- step 2 decisive: either the source is Type 2 and everything is recoverable,
+-- or nothing before today is. There is no intermediate outcome.
 --
 -- Re-run these two if the platform team ever changes the table properties --
 -- they are the only thing that would reopen the option:
@@ -321,43 +320,38 @@ order by 1;
 -- ===========================================================================
 -- WHAT TO DO WITH THE ANSWERS
 -- ===========================================================================
--- Step 1 is answered: the validity columns exist and are configured. The whole
--- question now reduces to step 2 -- are versions actually RETAINED.
+-- Steps 1, 3b and 3c are answered: the validity columns exist, 'A' marks the
+-- latest version only, and it is exactly equivalent to the open interval. The
+-- whole question reduces to step 2 -- are versions actually RETAINED.
 --
 -- step 2 rows_per_key > 1.0,        -> pdm_history_mode: 'scd2'. Backfill as
 --   step 3a returns zero               far as the source retains. Flip the
---                                      default in dbt_project.yml and you are
---                                      done. Trial it first with:
+--                                      default in macros/ppg_config.sql and you
+--                                      are done. Trial it first with:
 --                                        dbt build --vars '{pdm_history_mode: scd2,
 --                                          report_month: "2026-06-30"}'
 --                                      and compare row counts against the
 --                                      published June figures.
+--
 -- step 5 finds a history table      -> point the source at it; likely scd2.
 --
--- step 2 rows_per_key ~ 1.0        -> the columns are decorative: the loader
+-- step 2 rows_per_key ~ 1.0         -> the columns are decorative: the loader
 --                                      overwrites instead of versioning. scd2
 --                                      would then return CURRENT data for every
 --                                      past month, silently. This is the trap,
 --                                      and tests/assert_pdm_retains_versions.sql
 --                                      fails the build rather than let it
---                                      happen. Fall through to 'snapshot'.
+--                                      happen.
 --
--- nothing                           -> 'snapshot'. History starts the day you
---                                      first run `dbt snapshot`, and every
---                                      month before that is UNRECOVERABLE --
---                                      not "hard", not "expensive", gone.
---                                      Start today rather than after the next
---                                      month end; every day of delay is a day
---                                      of history that never existed.
---                                      Then: run `dbt snapshot` daily, before
---                                      `dbt build`, on its own schedule. A
---                                      missed day is a permanent hole. And add
---                                      snapshots for the five un-snapshotted
---                                      tables before calling a backfill
---                                      audit-grade -- see macros/pdm_as_of.sql.
---
--- In the second case, tell whoever consumes ppg_metrics_* that pre-snapshot
--- months cannot be restated. That is a reporting fact, not an engineering
--- detail, and it is better said now than when someone asks for a restatement.
+--                                      There is no fallback left if this
+--                                      happens: time travel is not enabled, and
+--                                      dbt-snapshot mode was removed once the
+--                                      source was confirmed Type 2. Recovering
+--                                      would mean reinstating snapshots from
+--                                      git and starting to accumulate history
+--                                      forward from that day -- nothing earlier
+--                                      would be recoverable. Tell whoever
+--                                      consumes ppg_metrics_* before promising
+--                                      any restatement.
 
 select 'run the statements above in order' as instructions

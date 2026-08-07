@@ -78,44 +78,45 @@ models:
       - name: completed_plan_dt
         tests: [not_null]
 
+  # NOTE ON WHAT IS *NOT* TESTED BELOW
+  # Every model in this directory is ephemeral, so a test here compiles to the
+  # entire upstream CTE chain re-executed just to make one assertion -- 53 to 74
+  # lines of SQL against 11 for the same assertion on a materialised mart.
+  # Tests were therefore dropped where they either (a) duplicated a test on the
+  # mart built directly from this model, or (b) could not fail, because a
+  # `select distinct` / `group by` / `count()` in the model guarantees them.
+  # What remains are the assertions that can actually fail and are not made
+  # anywhere else -- chiefly the grain tests that catch producer fan-out.
+
   - name: int_metrics__base_all
     description: >
-      Mapping rows for the current snapshot, restricted to contracts effective
-      on or before the reporting month end.
-    columns:
-      - name: month_end_date
-        tests: [not_null]
-      - name: primry_ownr_cl_id
-        tests: [not_null]
+      Mapping rows for the reporting month, restricted to contracts effective
+      on or before the month end. month_end_date and primry_ownr_cl_id are
+      tested on ppg_metrics_dtl, which is built directly from this.
 
   - name: int_summ__active_clients
     description: >
       Clients holding at least one contract effective in the trailing 60 months.
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          arguments:
-            combination_of_columns: [month_end_date, primry_ownr_cl_id]
+      Grain is guaranteed by `select distinct month_end_date, primry_ownr_cl_id`
+      in the model itself, so there is nothing left to assert.
 
   - name: int_summ__sales
-    description: One row per month. YTD new business counts and penetration rates.
+    description: >
+      One row per month. YTD new business counts and penetration rates. The
+      month grain and total_sales are tested on ppg_metrics_summ_monthly.
     columns:
-      - name: month_end_date
-        tests: [not_null, unique]
       - name: total_sales
         description: Denominator for all three penetration rates.
         tests:
-          - not_null
           - dbt_utils.accepted_range:
               arguments:
                 min_value: 1
                 inclusive: true
 
   - name: int_summ__client_breadth_depth
-    description: Breadth and depth per client per month.
-    tests:
-      - dbt_utils.unique_combination_of_columns:
-          arguments:
-            combination_of_columns: [month_end_date, primry_ownr_cl_id]
+    description: >
+      Breadth and depth per client per month. Grain is guaranteed by the
+      `group by 1, 2`; the range tests below are the ones that can fail.
     columns:
       - name: breadth_count
         tests:
@@ -131,8 +132,7 @@ models:
                 inclusive: true
 
   - name: int_summ__breadth_depth
-    columns:
-      - name: month_end_date
-        tests: [not_null, unique]
-      - name: denominator
-        tests: [not_null]
+    description: >
+      Per-month rollup of client breadth and depth. Nothing asserted here:
+      month_end_date is `group by 1` and tested on ppg_metrics_summ_monthly,
+      and denominator is a count(distinct), which cannot be null.

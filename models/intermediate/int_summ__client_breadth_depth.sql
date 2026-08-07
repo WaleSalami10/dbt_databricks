@@ -12,7 +12,7 @@
 {% set term_types = ppg_var('depth_collapse_product_types') %}
 
 with dates as (
-    select * from {{ ref('stg_pdm__ytd_dates') }}
+    select * from {{ ref('stg_pdm__dates') }}
 ),
 
 active_clients as (
@@ -27,7 +27,7 @@ scoped as (
     select ppg.*
     from {{ ref('ppg_metrics_dtl') }} ppg
     inner join dates dt
-        on ppg.month_end_date = dt.ytd_end_dt
+        on ppg.month_end_date = dt.month_end_date
 )
 
 select

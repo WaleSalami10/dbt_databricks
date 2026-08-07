@@ -18,12 +18,3 @@ seeds:
       - dbt_utils.unique_combination_of_columns:
           arguments:
             combination_of_columns: [product_ln_cd, product_grp_nm, product_nm]
-
-  - name: lob_producer_role
-    description: >
-      The producer role that should win per LOB. These came from the
-      commented-out filters in the original query. Only applied when
-      var('apply_producer_role_filter') is true.
-    columns:
-      - name: lob_nm
-        tests: [not_null, unique]

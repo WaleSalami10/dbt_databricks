@@ -19,12 +19,12 @@ with mapping as (
 ),
 
 dates as (
-    select * from {{ ref('stg_pdm__ytd_dates') }}
+    select * from {{ ref('stg_pdm__dates') }}
 )
 
 select distinct
     mapp.snapshot_date,
-    dt.ytd_end_dt          as month_end_date,
+    dt.month_end_date,
     mapp.lob_nm,
     mapp.cnt_id_nk,
     mapp.cnt_iss_cd_nk,
@@ -38,4 +38,4 @@ select distinct
     mapp.product_type
 from mapping mapp
 inner join dates dt
-    on mapp.cnt_eff_dt <= dt.ytd_end_dt
+    on mapp.cnt_eff_dt <= dt.month_end_date

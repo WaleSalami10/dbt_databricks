@@ -5,7 +5,7 @@ select
     primry_ownr_cl_id,
     primry_ownr_cl_role_eff_dt,
     rec_tp_cd
-from {{ pdm_relation('pdm', 'fact_primary_owner_derv') }}
-where {{ pdm_as_of('fact_primary_owner_derv') }}
+from {{ source('pdm', 'fact_primary_owner_derv') }}
+where {{ pdm_as_of() }}
 )
 select * from primary_owner_derv

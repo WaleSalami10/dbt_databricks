@@ -66,7 +66,7 @@ inner join active_clients actcl
     on  actcl.po_client_id_nk = base.primry_ownr_cl_id
     -- Redundant while dates yields one row, but it is the predicate that keeps
     -- this correct if the window is ever widened to several months.
-    and actcl.ytd_end_dt      = base.month_end_date
+    and actcl.month_end_date  = base.month_end_date
 left join planning pln
     on  pln.client_id         = base.primry_ownr_cl_id
     and pln.completed_plan_dt <= base.month_end_date

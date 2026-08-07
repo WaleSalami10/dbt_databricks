@@ -8,48 +8,41 @@
     reconstruct history -- filtering to 'I' gives you rows that are dead now,
     not rows that were alive then, and you cannot tell WHEN they died.
 
-    Point-in-time reconstruction needs a validity INTERVAL per row. Three modes:
+    Point-in-time reconstruction needs a validity INTERVAL per row. Two modes:
 
-    'current'      -- today's truth (the original behaviour). Backfills are
-                      refused by tests/assert_backfill_is_honest.sql, because
-                      they would stamp today's data with a past month.
+    'current'   -- today's truth (the original behaviour). Backfills are refused
+                   by tests/assert_backfill_is_honest.sql, because they would
+                   stamp today's data with a past month.
 
-    'scd2'         -- the real answer, and the one to aim for. All eight PDM
-                      tables carry edh_record_start_ts / edh_record_end_ts, so
-                      the columns needed to swap the status flag for a validity
-                      interval exist and are already set in vars.
+    'scd2'      -- point-in-time. All eight PDM tables carry
+                   edh_record_start_ts / edh_record_end_ts and the source is
+                   confirmed Type 2, so the interval replaces the status flag
+                   entirely.
 
-                      Having the columns is NOT the same as having history:
-                      steps 2 and 3 of analyses/diagnose_pdm_history.sql still
-                      have to confirm that multiple versions per key are
-                      actually retained and that their intervals tile. Until
-                      then this mode is available but unproven, which is why
-                      the project default is still 'current'.
+    WHY THERE ARE ONLY TWO
+    Two further modes lived here while the source was being characterised. Both
+    were removed once it was:
 
-    'snapshot'     -- read from the dbt snapshots in snapshots/, which build
-                      real SCD2 history going forward from the day you start
-                      running them. The only option that works when the source
-                      overwrites in place.
+      time_travel -- read the source with TIMESTAMP AS OF. Removed: Delta time
+                     travel is not enabled on the PDM tables, so there is no
+                     version log to read.
 
-    NO DELTA TIME TRAVEL. A fourth mode used to sit between these two, reading
-    the source with TIMESTAMP AS OF. It has been removed: time travel is not
-    enabled on the PDM sources, so there is no version log to read. This is
-    worth knowing rather than merely noting, because time travel was the only
-    option that required no modelling work AND could reach backwards. Without
-    it the choice narrows hard -- either the source is Type 2 and 'scd2' works,
-    or history starts the day you run `dbt snapshot` for the first time. There
-    is no third path and no way to recover a month that has already passed.
+      snapshot    -- accumulate SCD2 history forward with dbt snapshots.
+                     Removed: that was the fallback for a source that overwrites
+                     in place, and PDM does not. It reached back only as far as
+                     the first snapshot run, needed its own daily schedule, and
+                     covered three of the eight tables -- so a snapshot-mode
+                     backfill was always a hybrid of real history and current
+                     state. scd2 supersedes it on every axis.
 
-    TABLE ARGUMENT
-    The table name is required, not decorative. Only the three tables in
-    ppg_var('pdm_snapshotted_tables') have snapshots, so in 'snapshot' mode the
-    other five must keep the plain status predicate -- emitting dbt_valid_from
-    against a live source that has no such column is a runtime error, and
-    silently reverting them to current state without saying so would be worse.
-    See the caveat under 'snapshot' below.
+                     It is in git history if the source ever stops versioning,
+                     but note that restoring the code would not restore any
+                     history: snapshots only accumulate forward from the first
+                     run. If that risk ever needs covering, the answer is to
+                     start running them, not to keep the branch dormant.
 #}
 
-{% macro pdm_as_of(table_name, alias=none) %}
+{% macro pdm_as_of(alias=none) %}
     {%- set p = (alias ~ '.') if alias else '' -%}
     {%- set mode = ppg_var('pdm_history_mode') -%}
 
@@ -85,55 +78,10 @@
         {{ p }}{{ eff }} <= {{ pdm_as_of_instant() }}
         and coalesce({{ p }}{{ exp }}, timestamp'9999-12-31') >= {{ pdm_as_of_instant() }}
 
-    {%- elif mode == 'snapshot' -%}
-        {%- if table_name in ppg_var('pdm_snapshotted_tables') -%}
-            {#-
-                Two separate conditions, and both are needed:
-                  dbt_valid_from/to    -- which VERSION of the row was live then
-                  edh_record_status_in -- whether that version was ACTIVE then
-                The snapshots capture the status flag as a column, so its value
-                here is the value the source held on that date, not today's.
-            -#}
-            {#-
-                dbt's own snapshot intervals ARE half-open (dbt_valid_to of one
-                row equals dbt_valid_from of the next), unlike the PDM columns
-                above. `from <= T and to >= T` would therefore match two rows
-                for a version boundary landing exactly on T. Strict `>` on the
-                upper bound is correct here and only here.
-            -#}
-            {{ p }}dbt_valid_from <= {{ pdm_as_of_instant() }}
-            and coalesce({{ p }}dbt_valid_to, timestamp'9999-12-31') > {{ pdm_as_of_instant() }}
-            and {{ p }}edh_record_status_in = 'A'
-        {%- else -%}
-            {#-
-                No snapshot exists for this table, so this predicate is CURRENT
-                STATE inside an otherwise point-in-time run. A backfilled month
-                is therefore a hybrid: snapshotted contracts and producers as
-                they were, but owners, investment accounts and sub-accounts as
-                they are today. Add a snapshot for this table before treating a
-                'snapshot' mode backfill as audit-grade.
-            -#}
-            {{ p }}edh_record_status_in = 'A'
-        {%- endif -%}
-
     {%- else -%}
         {{ exceptions.raise_compiler_error(
-            "pdm_history_mode must be one of: current, scd2, snapshot. Got: " ~ mode
-            ~ ". ('time_travel' was removed -- the PDM sources have no version log.)") }}
-    {%- endif -%}
-{% endmacro %}
-
-
-{#
-    Wraps source() so that snapshot mode reads the snapshot instead of the live
-    table. A passthrough in every other mode.
-#}
-{% macro pdm_relation(source_name, table_name) %}
-    {%- set mode = ppg_var('pdm_history_mode') -%}
-
-    {%- if mode == 'snapshot' and table_name in ppg_var('pdm_snapshotted_tables') -%}
-        {{ ref('snap_pdm__' ~ table_name) }}
-    {%- else -%}
-        {{ source(source_name, table_name) }}
+            "pdm_history_mode must be 'current' or 'scd2'. Got: " ~ mode
+            ~ ". ('time_travel' and 'snapshot' were both removed -- see the "
+            ~ "header of macros/pdm_as_of.sql for why.)") }}
     {%- endif -%}
 {% endmacro %}

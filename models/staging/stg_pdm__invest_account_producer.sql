@@ -6,7 +6,7 @@ select
     invest_acct_cd,
     producer_id_nk,
     trim(prodcuer_role_cd_desc) as producer_cnt_role_nm
-from {{ pdm_relation('pdm', 'fact_invest_account_producer_role') }}
-where {{ pdm_as_of('fact_invest_account_producer_role') }}
+from {{ source('pdm', 'fact_invest_account_producer_role') }}
+where {{ pdm_as_of() }}
 )
 select * from invest_account_producer

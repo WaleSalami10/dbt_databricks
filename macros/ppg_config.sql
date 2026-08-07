@@ -43,19 +43,16 @@
 
     {#
         How the PDM staging models resolve "what was true at month end".
-          current   -- today's state only. Backfill refused. (default)
-          scd2      -- source is Type 2; uses the two columns below.
-          snapshot  -- read the dbt snapshots; history from the day you started
-                       running them.
-        Run analyses/diagnose_pdm_history.sql to confirm which applies.
+          current  -- today's state only. Backfill refused. (default)
+          scd2     -- point-in-time, using the two validity columns below.
 
-        Delta time travel is NOT an option: it is not enabled on the PDM
-        sources, so there is no version log to read as of a past month end.
+        Those are the only two. Delta time travel is not enabled on the PDM
+        sources, and dbt-snapshot mode was removed once the source was confirmed
+        Type 2 -- see the header of macros/pdm_as_of.sql.
 
         Note that 'current' is approximate even for the normal run: a report
         built on 5 August for the July month end reads 5 August's contract
-        state. Only scd2 -- or snapshot with a run that captured the month
-        end -- is exact.
+        state. Only scd2 is exact.
     #}
     {% do d.update({'pdm_history_mode': 'current'}) %}
 
@@ -71,26 +68,6 @@
     #}
     {% do d.update({'pdm_eff_col': 'edh_record_start_ts'}) %}
     {% do d.update({'pdm_exp_col': 'edh_record_end_ts'}) %}
-
-    {#
-        Only used when pdm_history_mode = 'snapshot'. Tables with a snapshot
-        built in snapshots/ ; anything not listed keeps reading the live source
-        at current state, which is a known gap -- see macros/pdm_as_of.sql.
-    #}
-    {% do d.update({'pdm_snapshotted_tables': [
-        'dim_contract',
-        'fact_contract_cmpnt_producer',
-        'dim_product'
-    ]}) %}
-
-    {#
-        The original query had every producer-role filter commented out.
-          false -- reproduce current behaviour (all producer roles, fan-out
-                   possible)
-          true  -- keep only the role configured per LOB in
-                   seeds/lob_producer_role.csv
-    #}
-    {% do d.update({'apply_producer_role_filter': false}) %}
 
     {#
         true  -- a client with no planning record, or one whose plan completed

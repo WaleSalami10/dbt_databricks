@@ -14,9 +14,9 @@
     that the number is not reproducible: rerun the same month a week later in
     'current' mode and you get a different answer.
 
-    Any other pdm_history_mode reads the month end itself, so snapshot_date
+    In 'scd2' mode PDM is read as of the month end itself, so snapshot_date
     equals month_end_date and this is silent. The drift figure below is the
-    honest measure of how approximate the month is.
+    honest measure of how approximate a 'current' mode month is.
 #}
 
 select

@@ -60,9 +60,18 @@ built on 4 August for the July month end reads 4 August's contracts, so
 `snapshot_date` is what tells you the month was captured four days late.
 `tests/assert_snapshot_is_month_end.sql` warns with the drift in days.
 
-`stg_pdm__ytd_dates` is now a renaming view over the spine rather than a second
-independent computation of the month end, so the `relationships` test that
-guarded the two against drifting apart is gone — there is nothing left to drift.
+`stg_pdm__ytd_dates` is **gone**. It was a second, independent computation of
+the month end, guarded by a `relationships` test against `stg_pdm__dates` in
+case the two ever drifted. Once the reporting month became an explicit input
+there was nothing left to compute, and it survived briefly as a pure renaming
+view — `month_end_date` aliased to `ytd_end_dt`, which
+`int_metrics__base_all` then renamed straight back. All four cells now read the
+one spine.
+
+The `ytd_` vocabulary is not lost, just narrowed to the one column that earns
+it: `ytd_begin_dt`, 1 January of the reporting year. The other end of the YTD
+window is simply the reporting month end, so it is called `month_end_date` like
+everywhere else.
 
 ## CTE to model mapping
 
@@ -87,7 +96,7 @@ The four ~300-line `CASE` expressions became `seeds/product_category_map.csv`.
 
 | Original CTE | Model |
 |---|---|
-| `dates` | `stg_pdm__ytd_dates` |
+| `dates` | `stg_pdm__dates` |
 | `base_all` | `int_metrics__base_all` |
 | `get_active_cl_eop` | `int_clients__active_eop` |
 | `clients_with_planning` + `clients_with_planning_v2` | `int_clients__planning_flags` (+ `int_planning__gm_clients`, `int_planning__fp_clients`) |
@@ -97,7 +106,7 @@ The four ~300-line `CASE` expressions became `seeds/product_category_map.csv`.
 
 | Original CTE | Model |
 |---|---|
-| `dates` | `stg_pdm__ytd_dates` (reused) |
+| `dates` | `stg_pdm__dates` (reused) |
 | final select | `ppg_metrics_monthly` |
 | commented-out `ppg_metrics_dtl_hist` union | same model, behind `include_historical_load` |
 
@@ -105,7 +114,7 @@ The four ~300-line `CASE` expressions became `seeds/product_category_map.csv`.
 
 | Original CTE | Model |
 |---|---|
-| `dates` | `stg_pdm__ytd_dates` (reused) |
+| `dates` | `stg_pdm__dates` (reused) |
 | `sales` | `int_summ__sales` |
 | `active_clients` | `int_summ__active_clients` |
 | `base` | `int_summ__client_breadth_depth` |
@@ -154,10 +163,10 @@ single row. Counting contracts in `ppg_metrics_dtl` and in
 Two things follow:
 
 - This dedup is partially masking the producer fan-out flagged in item 4 below.
-  It collapses duplicate *roles* but not duplicate *producers*. If you turn on
-  `apply_producer_role_filter`, the role half of this dedup becomes a no-op --
-  which is the correct end state, because then the grain is explicit rather
-  than the accidental output of a `distinct`.
+  It collapses duplicate *roles* but not duplicate *producers*. If the role
+  filters in `int_contracts__with_producer` are ever uncommented, the role half
+  of this dedup becomes a no-op -- which is the correct end state, because then
+  the grain is explicit rather than the accidental output of a `distinct`.
 - Dropping `cnt_iss_cd_nk` deserves a second look. It was half the contract key
   in every upstream join, and then it is discarded here. That is only safe if
   `cnt_id_nk` is unique on its own. The grain test on this model is what tells
@@ -196,22 +205,23 @@ notebook always behaved, so `tests/assert_snapshot_is_month_end.sql` warns
 rather than fails — but it means a month rerun a week later gives a different
 answer.
 
-### Delta time travel is not available
+### There is one mechanism, not four
 
-It is not enabled on the PDM sources, so there is no version log to read as of a
-past month end. The `time_travel` mode has been removed rather than left in
-place to fail at runtime.
+The project briefly carried four `pdm_history_mode` options while the source was
+being characterised. Two were removed once it had been:
 
-This narrows the problem sharply, and it is worth being blunt about why. Time
-travel was the only option that needed **no modelling work** and could still
-reach **backwards**. Without it there are exactly two outcomes:
+- **`time_travel`** — Delta time travel is not enabled on the PDM sources, so
+  there is no version log to read as of a past month end.
+- **`snapshot`** — accumulating SCD2 history forward with `dbt snapshot`. That
+  was the fallback for a source that overwrites in place, and PDM does not. It
+  reached back only to the first snapshot run, needed its own daily schedule,
+  and covered three of eight tables, so a snapshot-mode backfill was always a
+  hybrid of real history and current state.
 
-- the PDM tables are Type 2, and everything is recoverable; or
-- they are not, and history begins the first time you run `dbt snapshot`.
-
-There is no third path. No month that has already passed is recoverable in the
-second case, and the gap grows by one month every month the decision is
-deferred.
+What remains is `current` and `scd2`. If the source ever stops versioning, the
+snapshot code is in git history — but restoring it would not restore any
+*history*, because snapshots only accumulate forward from first run. The answer
+in that case is to start running them, not to keep a dormant branch.
 
 ### Step 1: the validity columns exist
 
@@ -219,7 +229,7 @@ All eight PDM tables carry **`edh_record_start_ts` / `edh_record_end_ts`**.
 These are *record* validity timestamps — when a version of the row was true —
 which is the kind that reconstructs history, as opposed to business dates like
 `cnt_eff_dt`. They are set as `pdm_eff_col` / `pdm_exp_col` in
-`dbt_project.yml`, so `scd2` mode is wired and ready to use.
+`macros/ppg_config.sql`, so `scd2` mode is wired and ready to use.
 
 **Having the columns is not the same as having the history.** A table can carry
 validity columns and still hold one row per key, if the loader overwrites
@@ -290,13 +300,13 @@ default in `dbt_project.yml`.
 
 ### Step 3: pick a mode
 
-Set `pdm_history_mode` in `dbt_project.yml`.
+Set `pdm_history_mode` in `macros/ppg_config.sql`, or override per run with
+`--vars '{pdm_history_mode: scd2}'`.
 
 | Mode | Use when | Reaches back |
 |---|---|---|
 | `current` | normal run (default) | today only; backfill refused |
-| `scd2` | PDM tables are Type 2 | as far as the source retains |
-| `snapshot` | source overwrites in place | from the day you start, no earlier |
+| `scd2` | point-in-time | as far as the source retains |
 
 `scd2` is the real answer and the columns are already configured. Every model
 becomes point-in-time with no other change, and it is the only mode that makes
@@ -331,61 +341,27 @@ session timezone, so a session running in UTC evaluates "end of 30 June" as
 into the next one. Step 0 of the diagnostic checks it; fix it on the profile,
 not in the models.
 
-Note that dbt's own snapshot intervals *are* half-open, so the `snapshot` branch
-of the macro uses a strict `>` on the upper bound where `scd2` uses `>=`. The
-two conventions genuinely differ; this is not an inconsistency.
+### What you still cannot recover
 
-`snapshot` is the fallback when the source genuinely overwrites. It reaches
-back to your first snapshot run and no further, so a backfill of an earlier
-month returns **no rows rather than wrong rows** — the right failure, but still
-a failure. If this is where you land, start running `dbt snapshot` today rather
-than after the next month end, and tell whoever consumes `ppg_metrics_*` that
-pre-snapshot months cannot be restated. That is a reporting fact, not an
-engineering detail. `snapshots/` contains three: `dim_contract`,
-`fact_contract_cmpnt_producer` and `dim_product`. Producer assignments were
-prioritised because a servicing reassignment is exactly the kind of edit that
-overwrites in place and leaves no trace. Run `dbt snapshot` **daily and before
-`dbt build`**, on its own schedule. A missed day is a permanent hole, and
-snapshots are append-only — drop the table and the history is gone for good.
+`scd2` reaches as far as EDH retains versions, which covers any month this
+report is likely to need. Two things remain out of reach regardless:
 
-Daily matters even though the report is monthly: the snapshot records a change
-when it next *sees* it, so an edit made and reverted between runs is invisible,
-and a snapshot run only at month end would date every change to month end. The
-report grain is monthly; the capture cadence has to be finer than the thing it
-is trying to observe.
+- **Historical business status.** As established above, `edh_record_status_in`
+  was never stored per version, so "was this contract active in March" cannot be
+  answered from PDM at all. This is a property of the source, not a limitation
+  of the modelling.
+- **Anything older than EDH's own retention.** If versions are ever purged, that
+  history is gone. Two partial consolations if it comes to that:
+  `ppg_metrics_dtl_hist` holds real PPG history — a subset, since it survived
+  the inner join to active clients and lacks `cnt_iss_cd_nk` and
+  `producer_cnt_role_nm`, but step 6 of the diagnostic shows its shape. And
+  `cnt_eff_dt` reconstructs which contracts *existed* at a past date, capturing
+  additions only: a lapsed contract still appears and recategorisations are
+  invisible. Useful for counting, not for audit.
 
-**`snapshot` mode is a hybrid, and it does not announce itself.** Only those
-three tables have snapshots. The other five PDM staging models keep reading the
-live source at current state, so a backfilled month has contracts and producers
-as they were, but owners, investment accounts and sub-accounts as they are
-today. `macros/pdm_as_of.sql` handles this per table rather than emitting
-`dbt_valid_from` against tables that have no such column, but the asymmetry is
-real: add the missing snapshots before treating a `snapshot`-mode backfill as
-audit-grade.
-
-### What you cannot recover
-
-If the diagnostic shows one row per key and no validity columns, **history
-before today does not exist at source**, full stop — there is no retention
-window to fall back on now that time travel is ruled out. Nothing in dbt can
-invent it. Two partial consolations:
-
-- `ppg_metrics_dtl_hist` already holds real PPG history. It cannot rebuild the
-  mapping table exactly -- it survived the inner join to active clients, so it
-  is a subset, and it lacks `cnt_iss_cd_nk` and `producer_cnt_role_nm` -- but
-  step 6 of the diagnostic shows what shape it covers.
-- `cnt_eff_dt` lets you reconstruct which contracts *existed* at a past date.
-  That captures additions only. A contract that lapsed still appears, and
-  product recategorisations are invisible. Useful for counting, not for audit.
-
-### One semantic check before trusting `scd2`
-
-The macro deliberately does **not** also require `edh_record_status_in = 'A'` in
-`scd2` mode. In most EDH Type 2 designs that flag marks the latest version of a
-key, so ANDing it with the interval collapses back to current state and silently
-removes the history. In some designs it means "not soft-deleted" and is safe to
-combine. Step 3b of the diagnostic distinguishes them. Get this wrong in the
-first direction and your backfill returns current data again.
+Note that months already built are safe either way. `ppg_stg_cnt_prd_mapping`
+retains one partition per reporting month permanently, so once a month has been
+produced it survives whatever happens upstream.
 
 ## Read this before running
 
@@ -426,12 +402,23 @@ original NULLs. **Check cells 3 and 4 for `= 'N'` predicates before flipping
 this either way.**
 
 **4. The producer role filters are still off.** Every
-`-- and cp.producer_cnt_role_nm = '...'` line is preserved as
-`apply_producer_role_filter: false`. Flip to `true` to activate
-`seeds/lob_producer_role.csv`. Until then the grain tests on
-`int_products__unified` and `ppg_metrics_dtl` will likely fail, which is the
-point: `select distinct` was hiding producer fan-out, and if a contract carries
-three producers in three roles you are counting it three times in the metrics.
+`-- and cp.producer_cnt_role_nm = '...'` line is preserved commented out in the
+join, verbatim from the notebook — in `int_contracts__with_producer` for the
+contract side and `int_wm_accounts__with_producer` for the wealth side.
+Uncomment the line for a LOB to switch that filter on; they are per-LOB because
+the original applied a different role to each branch, so enabling one does not
+imply the others.
+
+Until then the grain tests on `int_products__unified` and `ppg_metrics_dtl` will
+likely fail, which is the point: `select distinct` was hiding producer fan-out,
+and if a contract carries three producers in three roles you are counting it
+three times in the metrics. The fan-out does **not** reach
+`ppg_metrics_summ_monthly`, where every figure is a `count(distinct ...)`.
+
+(An earlier version drove this from a `seeds/lob_producer_role.csv` lookup
+behind `apply_producer_role_filter`. Both are gone: the filter is expressed in
+the SQL where the original had it, so what the notebook did and what this
+project does are the same text.)
 
 **5. `int_owners__*` partition by only `cnt_acct_id_nk`** but join downstream on
 `cnt_acct_id_nk` *and* `iss_cd_nk`. If an account id exists under two issue
@@ -461,7 +448,7 @@ producing them.
 **9. `ytd_begin_dt` was computed in all three date CTEs and never used.**
 Cell 4's YTD filter was written as
 `YEAR(cnt_eff_dt) = YEAR(month_end_date) AND cnt_eff_dt <= month_end_date`,
-which is exactly equivalent to `cnt_eff_dt between ytd_begin_dt and ytd_end_dt`
+which is exactly equivalent to `cnt_eff_dt between ytd_begin_dt and month_end_date`
 but wraps the column in a function so no partition can prune. `int_summ__sales`
 uses the sargable form. Same rows, less scanned.
 

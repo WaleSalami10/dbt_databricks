@@ -2,7 +2,13 @@
 --
 -- As with the contract side, the original had two UNION ALL branches split by
 -- product_nm purely so each could carry a different (commented-out) producer
--- role filter. Seed-driven single branch here.
+-- role filter. The product_nm split is handled upstream in
+-- stg_pdm__invest_sub_account, so one branch covers both.
+--
+-- ⚠ THE PRODUCER ROLE FILTERS ARE OFF, exactly as in the original ⚠
+-- Same fan-out caveat as int_contracts__with_producer -- see the header there.
+-- The two branches used DIFFERENT roles, so uncommenting is per product family,
+-- not all-or-nothing.
 with accounts as (
     select * from {{ ref('int_wm_accounts') }}
 ),
@@ -15,10 +21,6 @@ producers as (
     select * from {{ ref('stg_pdm__invest_account_producer') }}
 ),
 
-roles as (
-    select * from {{ ref('lob_producer_role') }}
-),
-
 joined as (
     select
         cn.product_nm                       as lob_nm,
@@ -28,7 +30,6 @@ joined as (
         cl.primry_ownr_cl_id,
         cp.producer_id_nk,
         cp.producer_cnt_role_nm,
-        rl.preferred_producer_role_nm,
         min(cn.invest_sub_acct_eff_dt)      as cnt_eff_dt
     from accounts cn
     inner join owners cl
@@ -36,10 +37,14 @@ joined as (
     left join producers cp
         on  cp.invest_acct_id_nk = cn.invest_acct_id
         and cp.invest_acct_cd    = cn.invest_acct_cd
-    left join roles rl
-        on rl.lob_nm = cn.product_nm
-    group by 1, 2, 3, 4, 5, 6, 7, 8
-    {{ pick_producer('cnt_id_nk, cnt_iss_cd_nk') }}
+        -- EAGLE / NYLIFE SEC / MAINSTAY branch:
+        -- and cp.producer_cnt_role_nm = 'ORIGINAL PRODUCER'
+        -- NP MUTFNDS / NP529           branch:
+        -- and cp.producer_cnt_role_nm = 'PRODUCER OF RECORD'
+    -- Was `group by 1..8`; column 8 was the seed's preferred_producer_role_nm.
+    -- Dropping it does not change the grouping -- it was functionally dependent
+    -- on lob_nm, which is still column 1.
+    group by 1, 2, 3, 4, 5, 6, 7
 )
 
 select
