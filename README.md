@@ -87,13 +87,15 @@ of the environment or a `.env` file. `--dry-run` prints the SQL instead of
 running it; `--as-of` moves the calendar; `--schema` and `--catalog` move the
 target.
 
-`macros/source.sql` overrides dbt's built-in `source()`. With the var on, every
-`source('a360', 'x')` resolves to that dummy schema instead of the real mart —
-**only the catalog and schema change, never the table name.** Staging models are
-unchanged between modes: they say `source()`, and the macro decides what that
-means. The flag is read at parse time, so it must come from `--vars` or
-`dbt_project.yml`, not mid-run; `dummy_schema` overrides the schema if you need
-to read someone else's copy.
+The redirect is in the source config itself — `database` and `schema` in
+[models/staging/_a360__sources.yml](models/staging/_a360__sources.yml) are
+templated on the var, so with it on, every `source('a360', 'x')` resolves to the
+dummy schema instead of the real mart. **Only the catalog and schema change,
+never the table name**, which is why no macro is involved: redirecting a source
+to another location is what source config is already for. Staging models are
+identical between modes. The flag is read at parse time, so it must come from
+`--vars` or `dbt_project.yml`, not mid-run; `dummy_schema` overrides the schema
+if you need to read someone else's copy.
 
 **The stand-ins are tables, not dbt seeds.** They replace *sources*, and a
 source is something that exists before dbt runs — as seeds they would sit inside
@@ -123,10 +125,14 @@ current data, 32 marketers become 22 rows under 4 recruiters.
 definitions. Run it directly to print what would be loaded; it never touches the
 warehouse.
 
-Two cautions. `dbt source freshness` reads the source config directly and never
-calls the macro, so do not run it in simulated mode. And the two modes should
-not share a target schema — the stand-ins are isolated in their own schema, but
-the models built on top of them are not.
+One caution: the two modes should not share a target schema. The stand-ins are
+isolated in their own schema, but the models built on top of them are not.
+
+`dbt source freshness` follows the redirect like everything else, so it works in
+simulated mode and reports the stand-ins as fresh — the generated load date is
+the as-of date. That is a side benefit of configuring the redirect rather than
+overriding `source()`: a macro override is invisible to freshness, which reads
+the source config directly.
 
 ## Testing
 

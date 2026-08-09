@@ -6,11 +6,17 @@ sources:
       Agency 360 mart, landed by the upstream EDW load. Every table here is
       read-only from dbt's point of view.
 
-      When the `use_dummy_data` var is true, `macros/source.sql` redirects every
-      one of these tables to a generated seed instead -- see the README. The
-      freshness checks below are meaningless in that mode and should not be run.
-    database: prod_execution_rs
-    schema: ext_agy_a360_mart
+      With `use_dummy_data: true` these definitions point instead at the
+      stand-in tables written by scripts/load_dummy_data.py, which carry the
+      same names and column types -- see the README. Only the catalog and
+      schema move; nothing else in the project is aware of the switch.
+
+    # Templated rather than swapped by a macro: the stand-ins are named after
+    # the real tables, so redirecting them is a matter of catalog and schema,
+    # which is what source config is already for. Read at parse time, so the
+    # var has to come from --vars or dbt_project.yml.
+    database: "{{ target.database if var('use_dummy_data', false) else 'prod_execution_rs' }}"
+    schema: "{{ var('dummy_schema', target.schema ~ '_dummy_a360') if var('use_dummy_data', false) else 'ext_agy_a360_mart' }}"
 
     tables:
       - name: orap10_data_src_load_ctrl
@@ -19,7 +25,9 @@ sources:
           the date the feed was last loaded. This is the source of truth for
           "as of when" the whole report is built.
         config:
-          loaded_at_field: ld_dt
+          # Cast because freshness requires a timestamp and this column is a
+          # date. Harmless if the real column is already a timestamp.
+          loaded_at_field: "cast(ld_dt as timestamp)"
           freshness:
             warn_after: {count: 30, period: hour}
             error_after: {count: 48, period: hour}
@@ -34,7 +42,7 @@ sources:
       - name: orap10_mk_daly_fyc_join_mv
         description: Daily first-year-commission summary, one row per marketer per day.
         config:
-          loaded_at_field: fyc_dt
+          loaded_at_field: "cast(fyc_dt as timestamp)"
           freshness:
             warn_after: {count: 48, period: hour}
             error_after: {count: 96, period: hour}

@@ -377,7 +377,7 @@ class Table:
     One stand-in source table: its name, its typed columns, and its rows.
 
     The name matches the real table in ext_agy_a360_mart exactly. That is what
-    lets macros/source.sql swap in the dummy schema by changing only the
+    lets the a360 source config swap in the dummy schema by changing only the
     catalog and schema, leaving every table name -- and therefore every staging
     model -- untouched.
     """

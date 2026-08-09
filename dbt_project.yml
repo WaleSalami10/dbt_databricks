@@ -19,8 +19,9 @@ vars:
   #         the stand-in tables written by scripts/load_dummy_data.py, so the
   #         project builds with no dependency on prod_execution_rs.
   # false = read the real a360 mart.
-  # Read at PARSE time, so it must come from here or --vars. See
-  # macros/source.sql; the schema is overridable with the dummy_schema var.
+  # Read at PARSE time, so it must come from here or --vars. The redirect
+  # lives in the source config in models/staging/_a360__sources.yml; the
+  # schema is overridable with the dummy_schema var.
   use_dummy_data: false
 
 models:

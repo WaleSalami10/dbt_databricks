@@ -8,8 +8,9 @@ types, in a dedicated schema:
     python scripts/load_dummy_data.py
     dbt build --vars '{use_dummy_data: true}'
 
-With `use_dummy_data: true`, `macros/source.sql` points every
-`source('a360', x)` at `<catalog>.<schema>_dummy_a360.x` instead of
+With `use_dummy_data: true`, the source config in
+models/staging/_a360__sources.yml points every source('a360', x) at
+`<catalog>.<schema>_dummy_a360.x` instead of
 `prod_execution_rs.ext_agy_a360_mart.x`. Only the catalog and schema change --
 the table names are identical, so no model, test or piece of documentation is
 aware of the difference.
@@ -121,7 +122,7 @@ def main() -> None:
                         help="Load-control date the calendar anchors on (default: today).")
     parser.add_argument("--schema",
                         help=f"Target schema. Defaults to <schema>_{SCHEMA_SUFFIX}, "
-                             f"matching what macros/source.sql looks for.")
+                             f"which is where the a360 source config looks.")
     parser.add_argument("--catalog", help="Target catalog. Defaults to $catalog.")
     parser.add_argument("--env-file", default=".env",
                         help="File to read connection variables from (default: .env).")
