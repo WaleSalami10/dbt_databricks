@@ -142,11 +142,25 @@ if something does. Check the table's query history before you touch it.
 
 ## Is cell 3 still needed?
 
-Yes, but not for the reason it was written.
+Barely. It is a **pure projection** — `ppg_metrics_dtl` with `cnt_iss_cd_nk`
+and `producer_cnt_role_nm` dropped, and nothing else.
 
-Structurally, `ppg_metrics_monthly` is `ppg_metrics_dtl` with two columns
-dropped -- `cnt_iss_cd_nk` and `producer_cnt_role_nm` -- and `distinct` applied.
-Everything else is identical, column for column.
+**There is no `distinct`, and an earlier version of this document was wrong to
+say there was.** The model briefly carried one, on the assumption that the
+original applied it. Diffing against the legacy table showed otherwise: removing
+the `distinct` is what makes the output match the notebook row for row. Cell 3
+does not deduplicate.
+
+**So duplicate rows are expected.** Any two `dtl` rows differing only in those
+two columns become byte-identical once they are dropped, and both survive. Which
+means:
+
+- `ppg_metrics_monthly` has **no unique key** — `unique_key` was removed from
+  the model config rather than left asserting a grain that does not hold.
+- Its row count **equals** `ppg_metrics_dtl`'s for the same month. A projection
+  does not change cardinality.
+- `count(*)` overstates contracts. Use `count(distinct cnt_id_nk)`, which is
+  what `ppg_metrics_summ_monthly` already does — so the summary is unaffected.
 
 **The month filter is now redundant.** The original's
 `INNER JOIN dates dt ON dt.ytd_end_dt = month_end_date` existed to pick which
@@ -154,26 +168,25 @@ single month to append to an accumulating table. That is what dbt's incremental
 partition config does. Cell 3's join is preserved in the model, but as an
 idempotency guard rather than as load logic.
 
-**The grain reduction is the real content, and it is load-bearing.** Dropping
-those two columns and deduplicating means a contract that exists under two
-issue codes, or with one producer recorded under two roles, collapses to a
-single row. Counting contracts in `ppg_metrics_dtl` and in
-`ppg_metrics_monthly` gives different answers, by design.
+**What the duplication is actually telling you.** It is not noise — it is the
+two open questions below, made visible:
 
-Two things follow:
+- **Producer fan-out** (item 4). The role filters in
+  `int_contracts__with_producer` are commented out, so one contract can carry
+  the same producer under several roles. Dropping `producer_cnt_role_nm`
+  turns those into identical duplicates.
+- **`cnt_iss_cd_nk`** (see Grain). It was half the contract key in every
+  upstream join and is then discarded here. That is only safe if `cnt_id_nk` is
+  unique on its own; if it is not, two genuinely different contracts merge.
 
-- This dedup is partially masking the producer fan-out flagged in item 4 below.
-  It collapses duplicate *roles* but not duplicate *producers*. If the role
-  filters in `int_contracts__with_producer` are ever uncommented, the role half
-  of this dedup becomes a no-op -- which is the correct end state, because then
-  the grain is explicit rather than the accidental output of a `distinct`.
-- Dropping `cnt_iss_cd_nk` deserves a second look. It was half the contract key
-  in every upstream join, and then it is discarded here. That is only safe if
-  `cnt_id_nk` is unique on its own. The grain test on this model is what tells
-  you whether it is.
+The `unique_combination_of_columns` test on this model is kept at **warn**
+severity for exactly this reason. It is expected to fail. Its job is to keep the
+duplication visible and quantified, not to forbid it. Fix the two causes at
+source and it starts passing on its own, at which point it can be promoted to
+an error and cell 3 genuinely collapses to a view.
 
-If both were resolved, cell 3 would genuinely collapse to a view. Until then it
-is doing real work and should stay a materialized model.
+Adding a `distinct` back would make the test pass tomorrow, and would hide both
+questions rather than answer them.
 
 ## Getting history of ppg_stg_cnt_prd_mapping
 
@@ -463,8 +476,12 @@ variations between repetitions.
   cnt_iss_cd_nk + producer_id_nk`
 - `ppg_metrics_dtl`: one row per `month_end_date + cnt_id_nk + cnt_iss_cd_nk +
   producer_id_nk`
-- `ppg_metrics_monthly`: one row per `month_end_date + cnt_id_nk +
-  producer_id_nk`
+- `ppg_metrics_monthly`: **no unique grain.** A projection of `ppg_metrics_dtl`
+  with two columns dropped and no `distinct`, so it holds one row per
+  `month_end_date + cnt_id_nk + cnt_iss_cd_nk + producer_id_nk` — the *dtl*
+  grain — with the two dropped columns no longer visible to tell those rows
+  apart. Row count matches `ppg_metrics_dtl` exactly. See "Is cell 3 still
+  needed?"
 - `ppg_metrics_summ_monthly`: one row per `month_end_date`
 
 Both contract-level grains include `producer_id_nk`. If the business definition
@@ -476,8 +493,23 @@ producers.
 calculation counts `distinct cnt_id_nk` with no issue code, and cell 3 drops the
 column entirely. Two of the four cells therefore already assume `cnt_id_nk` is
 unique on its own. If that assumption is wrong, depth is understated -- two
-contracts sharing an id under different issue codes count once. The grain test
-on `ppg_metrics_monthly` is the cheapest way to find out.
+contracts sharing an id under different issue codes count once.
+
+The warn-severity grain test on `ppg_metrics_monthly` is the cheapest way to
+find out. Split its failures to see which of the two causes you have:
+
+```sql
+select month_end_date, cnt_id_nk, producer_id_nk,
+       count(*)                             as duplicate_rows,
+       count(distinct cnt_iss_cd_nk)        as issue_codes,
+       count(distinct producer_cnt_role_nm) as producer_roles
+from <marts>.ppg_metrics_dtl
+group by 1, 2, 3
+having count(*) > 1
+order by 4 desc;
+```
+
+`producer_roles > 1` is item 4. `issue_codes > 1` is this question.
 
 Note also that the producer fan-out in item 4 does **not** reach
 `ppg_metrics_summ_monthly`: every figure there is a `count(distinct client)` or a

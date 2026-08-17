@@ -93,25 +93,40 @@ models:
 
   - name: ppg_metrics_monthly
     description: >
-      ppg_metrics_dtl reduced to contract-and-producer grain: cnt_iss_cd_nk and
-      producer_cnt_role_nm are dropped and the result deduplicated. Accumulates
-      one partition per reporting month. Feeds ppg_metrics_summ_monthly.
+      ppg_metrics_dtl with cnt_iss_cd_nk and producer_cnt_role_nm dropped. A
+      pure projection -- there is NO deduplication, matching the original
+      notebook, so duplicate rows are expected wherever two dtl rows differed
+      only in those two columns. This table therefore has no unique key.
+      Count contracts with count(distinct cnt_id_nk), never with count(*).
+      Accumulates one partition per reporting month; feeds
+      ppg_metrics_summ_monthly.
     tests:
       - dbt_utils.unique_combination_of_columns:
           description: >
-            Tighter than the dtl grain because two key columns were dropped. A
-            failure here means either one cnt_id_nk exists under two issue codes
-            with different cnt_eff_dt, or one contract carries several
-            producer_id_nk. Both are real modelling questions, not test noise.
+            WARN, NOT ERROR, AND NOT A GRAIN ASSERTION. Without a `distinct`
+            this combination is genuinely not unique, so this test is expected
+            to fail -- it is here to keep the duplication VISIBLE and to
+            quantify it, rather than to forbid it.
+
+            A failure means either one cnt_id_nk exists under two issue codes,
+            or one contract carries the same producer under several roles.
+            Both are real modelling questions -- README item 4 and the Grain
+            section -- and both would be fixed at source rather than by adding
+            a `distinct` back here. When they are fixed, this test starts
+            passing on its own and can be promoted to error.
           arguments:
             combination_of_columns:
               - month_end_date
               - cnt_id_nk
               - producer_id_nk
+          config:
+            severity: warn
       - dbt_utils.equal_rowcount:
           description: >
-            Monthly should never contain rows dtl does not. It may legitimately
-            contain FEWER after the dedup, so this is a warning, not an error.
+            A projection does not change cardinality, so with the `distinct`
+            removed this should now match EXACTLY for any month built in the
+            same run. It stays a warning only because the two tables can hold
+            different sets of months if one is backfilled without the other.
           arguments:
             compare_model: ref('ppg_metrics_dtl')
           config:
