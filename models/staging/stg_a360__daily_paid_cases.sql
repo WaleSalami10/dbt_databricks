@@ -16,9 +16,8 @@ with source as (
 select
 
       cast(trim(mktr_no) as string)         as mktr_no
-    , cast(trim(alt_prdt_cd) as string)     as product_cd
-    , cast(ctcp_paid_dt as timestamp)       as paid_dt
-    , cast(ctcp_case_cnt as int)            as cases_qty
-    , cast(ctcp_prm_amt as decimal(18, 2))  as premium_amt
+    , cast(trim(alt_prdt_cd) as string)     as alt_prdt_cd
+    , cast(ctcp_prm_smy_edt as timestamp)   as ctcp_prm_smy_edt
+    , cast(mk_shr_ctcp_sld_qy as int)       as mk_shr_ctcp_sld_qy
 
 from source

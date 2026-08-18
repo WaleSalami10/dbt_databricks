@@ -21,13 +21,13 @@ select
 
       f.mktr_no
 
-    , {{ period_buckets('f.fyc_amt', 'f.fyc_dt', 'fyc', dates='d') }}
+    , {{ period_buckets('f.mk_shr_fyc_am', 'f.fyc_smy_edt', 'fyc', dates='d') }}
 
 from daily_fyc f
 cross join dates d
 
 -- Narrow the scan to the current year before bucketing. The buckets themselves
 -- never look further back than cur_yr, so nothing is lost.
-where f.fyc_dt between d.cur_yr and d.cur_dt
+where f.fyc_smy_edt between d.cur_yr and d.cur_dt
 
 group by f.mktr_no

@@ -37,7 +37,7 @@ models:
       - name: cur_mnst
         description: First day of the current month. Lower bound of the MTD bucket.
         data_tests: [not_null]
-      - name: cur_month_end_dt
+      - name: curr_month_enddate
         description: Last day of the current month.
         data_tests: [not_null]
       - name: cw_start_dt
@@ -185,10 +185,11 @@ models:
       - name: cw_class
         description: Class as at the start of the current week.
         data_tests:
-          - relationships:
+          - accepted_values:
+              description: A class code with no label renders as 'Other'; warn, do not fail.
               arguments:
-                to: ref('marketer_class_labels')
-                field: class_cd
+                values: [1, 2, 3, 4, 5, 10]
+                quote: false
               config:
                 severity: warn
       - name: pw_class
@@ -203,10 +204,11 @@ models:
                 All four class columns null for every marketer means the
                 point-in-time windows and the reporting dates do not overlap at
                 all -- a silent failure, since null is a legitimate value here.
-          - relationships:
+          - accepted_values:
+              description: A class code with no label renders as 'Other'; warn, do not fail.
               arguments:
-                to: ref('marketer_class_labels')
-                field: class_cd
+                values: [1, 2, 3, 4, 5, 10]
+                quote: false
               config:
                 severity: warn
 
@@ -216,7 +218,7 @@ models:
       open-ended sentinel resolved to the end of the current year so that the
       BETWEEN comparisons in the mart behave.
 
-      Filtered to statuses in the active_status_codes seed and to the row in
+      Filtered to the ten active status codes and to the row in
       force at the start of the reporting month, which is what makes it one row
       per marketer.
     columns:
@@ -227,22 +229,22 @@ models:
           - unique:
               description: >
                 Depends on contract windows not overlapping (tested in staging)
-                and on active_status_codes not containing two statuses a
+                and on the active-status list not containing two statuses a
                 marketer can hold at once. If this fails the mart fans out.
           - dbt_utils.at_least_one:
               description: >
                 An empty model here is not an error anywhere downstream -- the
-                mart left-joins it, so every contract_end_dt simply comes out
+                mart left-joins it, so every contractenddate simply comes out
                 null and every active flag comes out 0. That has happened once
                 already, from a status-code format mismatch. See also
                 tests/assert_report_is_not_vacuous.sql.
-      - name: status_cd
+      - name: mk_sts_tp_cd
         description: The contract status in force for the reporting month.
         data_tests: [not_null]
-      - name: status_valid_from
+      - name: mk_sts_atv_edt
         description: '{{ doc("valid_from") }}'
         data_tests: [not_null]
-      - name: contract_end_dt
+      - name: contractenddate
         description: >
           Contract end date. Open-ended contracts get the last day of the
           current reporting year, not 9999-12-31, so that "still under contract
@@ -251,4 +253,4 @@ models:
     data_tests:
       - dbt_utils.expression_is_true:
           arguments:
-            expression: "contract_end_dt >= status_valid_from"
+            expression: "contractenddate >= mk_sts_atv_edt"

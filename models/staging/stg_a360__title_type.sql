@@ -1,7 +1,7 @@
 /*
     Job title lookup, one row per title code.
 
-    title_nm is initcap()'d, carried over from the original query, which matched
+    ttl_nm is initcap()'d, carried over from the original query, which matched
     the reportable-title list against the display text rather than the code.
     initcap() plus trim() makes that matching as robust as it can be given the
     approach ('MANAGING PARTNER ' and 'managing partner' both land on
@@ -21,6 +21,6 @@ with source as (
 select
 
       cast(trim(mk_ttl_tp_cd) as string)    as mk_ttl_tp_cd
-    , initcap(trim(mk_ttl_tp_dsc))          as title_nm
+    , initcap(trim(mk_ttl_tp_nm))           as ttl_nm
 
 from source

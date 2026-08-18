@@ -37,32 +37,36 @@ models:
         description: Recruiter's first name.
       - name: mk_lst_nm
         description: Recruiter's last name.
-      - name: title_nm
-        description: Recruiter's title. Always one of the reportable_titles seed values.
+      - name: ttl_nm
+        description: >
+          Recruiter's title. Always one of the five reportable titles -- this
+          model filters on that list, so the test below restates the filter and
+          fails only if the filter itself stops being applied.
         data_tests:
           - not_null
-          - relationships:
+          - accepted_values:
               arguments:
-                to: ref('reportable_titles')
-                field: title_nm
-      - name: general_office_nm
+                values: ['Managing Partner', 'Partner', 'Senior Partner',
+                         'Executive Partner', 'Associate Partner']
+      - name: go_nm
         description: Recruiter's general office.
         data_tests: [not_null]
-      - name: zone_nm
+      - name: zn_nm
         description: Recruiter's zone.
         data_tests: [not_null]
 
       - name: mk_cls_tp_cd
         description: The producer's current class code, from the dashboard dimension.
-      - name: class_label
+      - name: cls_copy
         description: >
-          Display label for mk_cls_tp_cd, from the marketer_class_labels seed.
-          Null means a class code with no label -- warned about in staging.
+          Display label for mk_cls_tp_cd, from the CASE block in this model.
+          A code with no entry in that var renders as 'Other' rather than null,
+          matching the ELSE in FOD_query.sql; staging warns when it happens.
 
       - name: orig_appt_dt
         description: Original appointment date.
         data_tests: [not_null]
-      - name: contract_end_dt
+      - name: contractenddate
         description: >
           Contract end date, sentinel resolved. Null means no active contract
           row for the reporting month, which is legitimate for a terminated
@@ -84,6 +88,26 @@ models:
                 quote: false
       - name: count_active
         description: Manpower active-headcount flag. Null where there is no manpower row.
+      - name: prior_prorata
+        description: >
+          ALWAYS IDENTICAL TO prorata. The original joins manpower twice on the
+          same key with no distinguishing predicate, so the second join returns
+          the same row as the first. Reproduced from FOD_query.sql line 132; it
+          is not a prior-period value and should not be read as one until the
+          mpr join gets a date predicate. See the model header and the README.
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [0, 1]
+                quote: false
+          - dbt_utils.expression_is_true:
+              description: >
+                States the duplication as a test rather than only in prose. When
+                someone gives mpr a real prior-period predicate this fails, which
+                is the signal to delete this test and the warnings around it.
+              arguments:
+                expression: "prior_prorata = prorata"
 
       - name: fyc_me
         description: First-year commission, year to date through the end of the prior month.
@@ -182,7 +206,7 @@ models:
         data_tests:
           - accepted_values:
               arguments: {values: [0, 1], quote: false}
-      - name: active_pw
+      - name: activet_pw
         description: 1 if actively contracted at the start of the prior week.
         data_tests:
           - accepted_values:

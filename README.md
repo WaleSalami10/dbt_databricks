@@ -50,7 +50,7 @@ that rule shapes the layer:
 
 ```bash
 dbt deps
-dbt build                 # seed, run and test in dependency order
+dbt build                 # run and test in dependency order
 ```
 
 Or without a connection to the a360 mart at all — see
@@ -115,7 +115,7 @@ same day reproduces the same rows.
 
 The data is shaped to exercise the logic rather than to look pretty. Two of the
 six recruiters are unreportable — one holds a title absent from
-`reportable_titles`, one a dashboard status absent from
+the `reportable_titles` var, one a dashboard status absent from
 `reportable_dashboard_status_codes` — so both downlines should vanish from the
 mart. Some marketers are terminated, some are inside their first six months,
 and non-life products exist so the `'LF'` filter has something to remove. On the
@@ -145,12 +145,12 @@ passing. The interesting ones are not the `not_null`s:
 | `assert_fyc_ties_to_source` | Per-marketer reconciliation from the mart back to the raw daily table, past six joins and the bucketing macro. |
 | `assert_report_is_not_vacuous` | Catches joins that resolve to nothing — see below. |
 | `mutually_exclusive_ranges` on both type-2 models | Overlapping windows make the point-in-time class lookup return the wrong row rather than fail. |
-| `unique` on `stg_a360__marketer_appointment.mktr_no` | The fan-out the original's `select distinct` was hiding, tested at the layer where it originates. |
+| `unique` on `stg_a360__marketer_appointment.mktr_no` | The fan-out `select distinct` can hide, tested at the layer where it originates rather than papered over at the end. |
 | `equal_rowcount` between load control and the calendar | One row in, one row out. |
 
 **Why `assert_report_is_not_vacuous` exists.** During the first simulated build,
 the status codes were inferred from CSV as integers, so `01` arrived as `1` and
-the join to `active_status_codes` matched nothing. Every marketer came
+the active-status filter matched nothing. Every marketer came
 out with a null contract, every `active_*` flag came out `0`, and every
 six-month flag came out `'N'`. **All 181 tests passed.** `not_null`, `unique`,
 `accepted_values` and `relationships` are all perfectly satisfied by a column
@@ -159,8 +159,8 @@ match into a null rather than an error. A report claiming zero active marketers
 is never right, and it is the kind of wrong that gets published rather than
 noticed — so it is now asserted directly, alongside `at_least_one` on the models
 that feed it. The underlying cause is fixed twice over: the stand-in tables
-declare their types in DDL rather than inferring them, and the code seeds pin
-`status_cd` to `string` in `dbt_project.yml`.
+declare their types in DDL rather than inferring them, and every status code in
+every `IN` list is quoted so it cannot be read as an integer.
 
 Severities are deliberate. Tests that mean *the numbers are wrong* are errors.
 Tests that mean *the source has changed shape and someone should look* — an
@@ -184,34 +184,43 @@ the `sum(case when ... then ... end)` block once. FYC and paid cases both call
 it, so the two can no longer drift apart — which is the failure mode when the
 same ten lines are copy-pasted.
 
-**Magic lists moved to seeds.** Status codes, titles, and the recruiter status
-filter were hardcoded `IN` lists scattered through the original — the active
-status list appeared twice, on lines 71–73 and again on 169–171, with no
-guarantee the two stayed in sync. They are CSVs in `seeds/` now:
+**Code lists stay as literal `IN` lists,** exactly where and how
+FOD_query.sql writes them:
 
-| Seed | Replaces |
-|---|---|
-| `active_status_codes.csv` | lines 71–73 and 169–171 |
-| `reportable_titles.csv` | line 178 |
-| `reportable_dashboard_status_codes.csv` | line 179 |
-| `marketer_class_labels.csv` | the CASE block, lines 120–127 |
+| List | Lives in | From |
+|---|---|---|
+| Ten active status codes | `int_class_by_marketer`, `int_marketer_contract` | lines 71–73 and 169–171 |
+| Five reportable titles | `fct_marketer_production` | line 178 |
+| Three dashboard status codes | `fct_marketer_production` | line 179 |
+| Class-code labels (`CASE`) | `fct_marketer_production` | lines 120–127 |
 
-Models filter by joining to the seed rather than by an `IN` list. An inner join
-to a lookup table *is* a filter — only rows with a matching code survive.
+**The active status list is written out twice** — once in each intermediate
+model — because the original has it twice. Nothing enforces that the two copies
+agree. If they drift, a marketer counts as active for their class lookup but not
+for their contract, or the reverse, and the report is quietly wrong rather than
+broken. Both model headers say so. This is the one deliberate piece of
+duplication in the project; if it bites, the fix is a macro or a var, not a
+third copy.
 
-Seeds rather than `vars` because a code list is business data, not project
-configuration. It can be queried, tested, given a description column, and
-reviewed in a pull request by someone who doesn't read YAML. `dbt_project.yml`
-stays untouched when the business adds a status code.
+**The status codes must stay quoted.** They are zero-padded text and one of them
+is `1C`. As integers, `'01'` becomes `1`, the `IN` list matches nothing, and the
+report shows no marketer under contract — silently. That is the exact failure
+described under `assert_report_is_not_vacuous` below. The class codes in the
+`CASE` block are the opposite: `mk_cls_tp_cd` is an integer, so those are
+unquoted.
 
-The descriptions in `active_status_codes.csv` are placeholders — confirm the
-real ones with the business owner and correct that file.
+The class labels map `1→CC, 2→1P, 3→2P, 4→3P, 5→Estab, 10→PTAS`, with anything
+else falling through to `Other` — the `ELSE` in the original. Confirm those
+labels against the class taxonomy the business actually uses.
 
 **`limit 10` removed.** It was a testing leftover on line 182.
 
-**`select distinct` removed.** Distinct was hiding a possible fan-out from the
-join to marketer history. There is now a `unique` test on `mktr_no` in the mart
-instead, so a duplicate fails the run rather than silently disappearing.
+**`select distinct` kept,** as in the original. Be clear about what it does and
+does not do: it collapses duplicate rows from an upstream fan-out only when
+those rows are byte-identical, and does nothing when they differ — then the
+marketer appears twice and the report doubles. The `unique` test on `mktr_no` in
+the mart is the actual guard, and it stays for that reason. The fan-out's origin
+is the join to marketer history, tested at that layer too.
 
 **`current_date` replaced with `cur_dt`.** Lines 112–113 of the original used
 `current_date` while everything else used the load date. On a late or re-run
@@ -233,11 +242,16 @@ under [Testing](#testing). Every model and column is documented in the
    it as `d.prv_me between a.start_6mo and a.end_6mo`, which is what the flag
    name implies. Verify against the report spec.
 
-2. **The manpower table was joined twice on the same key** (`mp` and `mpr`, both
-   `on mktr_no = dash.mktr_no`) to produce `prorata` and `prior_prorata`. With no
-   distinguishing filter, those two columns always held identical values. Only
-   one join is kept. If `prior_prorata` is meant to be last month's snapshot, it
-   needs a date predicate — that predicate does not exist in the original.
+2. **The manpower table is joined twice on the same key** (`mp` and `mpr`, both
+   `on mktr_no = m.mktr_no`), producing `prorata` and `prior_prorata`. With no
+   distinguishing predicate those two columns are always identical. Both joins
+   are reproduced from the original, and `expression_is_true` on
+   `prior_prorata = prorata` in `_marts.yml` states the duplication as a test —
+   it fails the day someone gives `mpr` a real predicate, which is the signal to
+   remove the test. If `prior_prorata` is meant to be last month's snapshot it
+   needs a date predicate, and `orap10_mk_manpower` exposes no column to write
+   one against. **Do not report `prior_prorata` as a prior-period figure until
+   that is resolved.**
 
 3. **`active_mtd` and `active_ytd` were identical** in the original (both test
    `cur_dt`). Preserved as-is, but likely a copy-paste slip.
@@ -250,7 +264,7 @@ under [Testing](#testing). Every model and column is documented in the
    178. That means a title stored as "MANAGING PARTNER " with a trailing space,
    or renamed to "Managing Partner (Field)", silently drops those marketers from
    the report with no error. Matching on `mk_ttl_tp_cd` instead would be robust;
-   swap `reportable_titles.csv` for a list of codes once you can look them up.
+   swap the `reportable_titles` var for a list of codes once you can look them up.
 
 ## Where to go next
 

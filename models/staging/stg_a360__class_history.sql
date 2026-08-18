@@ -1,8 +1,8 @@
 /*
     Marketer class (career level) history -- a type-2 dimension.
 
-    One row per marketer per class, valid between class_valid_from and
-    class_valid_to inclusive. int_class_by_marketer reads it as a point-in-time
+    One row per marketer per class, valid between mk_cls_edt and
+    mk_cls_xdt inclusive. int_class_by_marketer reads it as a point-in-time
     lookup: "which row's window contains this reporting date?".
 
     That lookup assumes the windows for a marketer do not overlap. The
@@ -20,8 +20,8 @@ with source as (
 select
 
       cast(trim(mktr_no) as string)     as mktr_no
-    , cast(mk_cls_tp_cd as int)         as class_cd
-    , cast(mk_cls_edt as timestamp)     as class_valid_from
-    , cast(mk_cls_xdt as timestamp)     as class_valid_to
+    , cast(mk_cls_tp_cd as int)         as mk_cls_tp_cd
+    , cast(mk_cls_edt as timestamp)     as mk_cls_edt
+    , cast(mk_cls_xdt as timestamp)     as mk_cls_xdt
 
 from source

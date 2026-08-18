@@ -42,12 +42,13 @@ from datetime import date, timedelta
 RANDOM_SEED = 20260807
 
 # The load-control feed that int_reporting_periods anchors on.
-TARGET_SYSTEM = "A360"
-LOAD_FEED = "MK_DAILY"
+TARGET_SYSTEM = "DASHBOARD"
+LOAD_FEED = "Life Premium/Paid Cases"
 
 # Titles are stored upper-case in the source and initcap()'d by the staging
 # model, which is how the original query matched them. Only the first four are
-# in seeds/reportable_titles.csv -- 'AGENT' and 'ASSOCIATE PARTNER' exist so the
+# in the title list in fct_marketer_production -- 'AGENT' and 'ASSOCIATE
+# PARTNER' exist so the
 # title filter has something to actually filter out.
 TITLES = [
     ("MP", "MANAGING PARTNER"),
@@ -59,14 +60,17 @@ TITLES = [
 ]
 REPORTABLE_TITLE_CODES = ["MP", "PT", "SP", "EP"]
 
-# Matches seeds/reportable_dashboard_status_codes.csv (01, 04, 1C) plus '99',
-# which is deliberately absent from every seed so it gets filtered out.
+# Matches the dashboard status filter in fct_marketer_production (01, 04, 1C)
+# plus '99', deliberately absent from every code list so it gets filtered out.
 DASHBOARD_STATUS_CODES = ["01", "04", "1C", "99"]
 
-# Matches seeds/active_status_codes.csv plus '99' (terminated, not active).
+# Matches the active-status IN list in the intermediate models, plus '99'
+# (terminated, not active).
 CONTRACT_STATUS_CODES = ["01", "04", "05", "07", "99"]
 
-CLASS_CODES = [1, 2, 3, 4, 5, 6, 7, 8]
+# 1-5 and 10 are the codes the CASE block in fct_marketer_production maps; 6 is
+# here so the unmapped -> 'Other' fallback is actually exercised by the build.
+CLASS_CODES = [1, 2, 3, 4, 5, 10, 6]
 
 OFFICES = [
     ("OU100", "Chicago General Office", "Central Zone"),
@@ -155,7 +159,7 @@ def build_marketers(rng: random.Random, as_of: date) -> list[Marketer]:
             # non-reportable dashboard status: both of their downlines should
             # disappear from the mart. That is the point of them. 'AG' (Agent)
             # is used rather than 'AP' because Associate Partner IS in
-            # seeds/reportable_titles.csv.
+            # the reportable-title list.
             title_cd=REPORTABLE_TITLE_CODES[i] if i < 4 else ("AG" if i == 5 else "MP"),
             dashboard_status_cd="99" if i == 4 else rng.choice(DASHBOARD_STATUS_CODES[:3]),
             contract_status_cd=rng.choice(CONTRACT_STATUS_CODES[:4]),
@@ -228,13 +232,20 @@ def collapse_to_grain(rows: list[dict], keys: list[str], measures: dict[str, str
 
 
 def build_load_control(as_of: date) -> list[dict]:
-    """One row per (target system, feed). Only the MK_DAILY row is read."""
+    """
+    One row per (target system, data subject). Only the
+    DASHBOARD / 'Life Premium/Paid Cases' row is read.
+
+    The other two rows are decoys: each matches on exactly one of the two
+    filter columns, so a model that filters on only one of them picks up a
+    wrong load date instead of silently working.
+    """
     return [
-        {"tgt_sys_cd": TARGET_SYSTEM, "src_feed_nm": LOAD_FEED,
+        {"tgt_sys_nm": TARGET_SYSTEM, "common_data_name": LOAD_FEED,
          "ld_dt": as_of.isoformat(), "ld_stat_cd": "C"},
-        {"tgt_sys_cd": TARGET_SYSTEM, "src_feed_nm": "MK_MONTHLY",
+        {"tgt_sys_nm": TARGET_SYSTEM, "common_data_name": "Agent Headcount",
          "ld_dt": month_start(as_of).isoformat(), "ld_stat_cd": "C"},
-        {"tgt_sys_cd": "EDW", "src_feed_nm": "MK_DAILY",
+        {"tgt_sys_nm": "EDW", "common_data_name": LOAD_FEED,
          "ld_dt": (as_of - timedelta(days=3)).isoformat(), "ld_stat_cd": "C"},
     ]
 
@@ -259,8 +270,8 @@ def build_daily_fyc(rng: random.Random, marketers: list[Marketer], as_of: date) 
                 continue
             rows.append({
                 "mktr_no": m.mktr_no,
-                "fyc_dt": fyc_dt.isoformat(),
-                "fyc_amt": f"{rng.uniform(150, 9500):.2f}",
+                "fyc_smy_edt": fyc_dt.isoformat(),
+                "mk_shr_fyc_am": f"{rng.uniform(150, 9500):.2f}",
             })
         # Guarantee coverage of the two week buckets and month to date.
         for offset in (rng.randint(0, 6), rng.randint(7, 13), rng.randint(0, 25)):
@@ -269,10 +280,10 @@ def build_daily_fyc(rng: random.Random, marketers: list[Marketer], as_of: date) 
                 continue
             rows.append({
                 "mktr_no": m.mktr_no,
-                "fyc_dt": fyc_dt.isoformat(),
-                "fyc_amt": f"{rng.uniform(150, 9500):.2f}",
+                "fyc_smy_edt": fyc_dt.isoformat(),
+                "mk_shr_fyc_am": f"{rng.uniform(150, 9500):.2f}",
             })
-    return collapse_to_grain(rows, ["mktr_no", "fyc_dt"], {"fyc_amt": "sum_money"})
+    return collapse_to_grain(rows, ["mktr_no", "fyc_smy_edt"], {"mk_shr_fyc_am": "sum_money"})
 
 
 def build_paid_cases(rng: random.Random, marketers: list[Marketer], as_of: date) -> list[dict]:
@@ -289,10 +300,9 @@ def build_paid_cases(rng: random.Random, marketers: list[Marketer], as_of: date)
             product = rng.choices(PRODUCTS, weights=[30, 25, 20, 10, 10, 5])[0]
             rows.append({
                 "mktr_no": m.mktr_no,
-                "ctcp_paid_dt": paid_dt.isoformat(),
+                "ctcp_prm_smy_edt": paid_dt.isoformat(),
                 "alt_prdt_cd": product[0],
-                "ctcp_case_cnt": rng.randint(1, 3),
-                "ctcp_prm_amt": f"{rng.uniform(500, 25000):.2f}",
+                "mk_shr_ctcp_sld_qy": rng.randint(1, 3),
             })
         for offset in (rng.randint(0, 6), rng.randint(7, 13)):
             paid_dt = as_of - timedelta(days=offset)
@@ -300,15 +310,14 @@ def build_paid_cases(rng: random.Random, marketers: list[Marketer], as_of: date)
                 continue
             rows.append({
                 "mktr_no": m.mktr_no,
-                "ctcp_paid_dt": paid_dt.isoformat(),
+                "ctcp_prm_smy_edt": paid_dt.isoformat(),
                 "alt_prdt_cd": rng.choice(PRODUCTS[:3])[0],
-                "ctcp_case_cnt": rng.randint(1, 2),
-                "ctcp_prm_amt": f"{rng.uniform(500, 25000):.2f}",
+                "mk_shr_ctcp_sld_qy": rng.randint(1, 2),
             })
     return collapse_to_grain(
         rows,
-        ["mktr_no", "ctcp_paid_dt", "alt_prdt_cd"],
-        {"ctcp_case_cnt": "sum_int", "ctcp_prm_amt": "sum_money"},
+        ["mktr_no", "ctcp_prm_smy_edt", "alt_prdt_cd"],
+        {"mk_shr_ctcp_sld_qy": "sum_int"},
     )
 
 
@@ -398,7 +407,7 @@ def build_tables(as_of: date) -> list[Table]:
     return [
         Table(
             "orap10_data_src_load_ctrl",
-            [("tgt_sys_cd", "string"), ("src_feed_nm", "string"),
+            [("tgt_sys_nm", "string"), ("common_data_name", "string"),
              ("ld_dt", "date"), ("ld_stat_cd", "string")],
             build_load_control(as_of),
         ),
@@ -429,27 +438,28 @@ def build_tables(as_of: date) -> list[Table]:
         ),
         Table(
             "orap10_mk_manpower",
-            [("mktr_no", "string"), ("pro_rata_ind", "int"), ("cnt_atv_ind", "int")],
+            [("mktr_no", "string"), ("pro_rata_ind", "int"), ("count_active", "int")],
             [{"mktr_no": m.mktr_no,
               "pro_rata_ind": 1 if rng.random() < 0.35 else 0,
-              "cnt_atv_ind": 0 if m.terminated_on else 1} for m in marketers],
+              "count_active": 0 if m.terminated_on else 1} for m in marketers],
         ),
         Table(
             "orap10_cur_go_zone",
-            [("org_unit_cd", "string"), ("go_nm", "string"), ("zone_nm", "string")],
-            [{"org_unit_cd": c, "go_nm": g, "zone_nm": z} for c, g, z in OFFICES],
+            [("org_unit_cd", "string"), ("org_unit_nm", "string"), ("zone_nm", "string")],
+            [{"org_unit_cd": c, "org_unit_nm": g, "zone_nm": z} for c, g, z in OFFICES],
         ),
         Table(
             "orap10_mk_ttl_tp",
-            [("mk_ttl_tp_cd", "string"), ("mk_ttl_tp_dsc", "string")],
-            [{"mk_ttl_tp_cd": c, "mk_ttl_tp_dsc": d} for c, d in TITLES],
+            [("mk_ttl_tp_cd", "string"), ("mk_ttl_tp_nm", "string")],
+            [{"mk_ttl_tp_cd": c, "mk_ttl_tp_nm": d} for c, d in TITLES],
         ),
         Table(
             "orap10_dash_alt_prdt_mv",
-            [("alt_prdt_cd", "string"), ("alt_prdt_line_cd", "string"),
-             ("alt_prdt_nm", "string")],
-            [{"alt_prdt_cd": c, "alt_prdt_line_cd": l, "alt_prdt_nm": n}
-             for c, l, n in PRODUCTS],
+            # The third element of each PRODUCTS tuple is a readable label for
+            # whoever edits this file; it is not a column on the real table.
+            [("alt_prdt_cd", "string"), ("alt_prdt_line_cd", "string")],
+            [{"alt_prdt_cd": c, "alt_prdt_line_cd": l}
+             for c, l, _ in PRODUCTS],
         ),
         Table(
             "orap10_mk_cls_hist",
@@ -467,14 +477,14 @@ def build_tables(as_of: date) -> list[Table]:
         ),
         Table(
             "orap10_mk_daly_fyc_join_mv",
-            [("mktr_no", "string"), ("fyc_dt", "date"), ("fyc_amt", "decimal(18,2)")],
+            [("mktr_no", "string"), ("fyc_smy_edt", "date"),
+             ("mk_shr_fyc_am", "decimal(18,2)")],
             build_daily_fyc(rng, marketers, as_of),
         ),
         Table(
             "orap10_mk_daly_ctcp_prm_smy",
-            [("mktr_no", "string"), ("ctcp_paid_dt", "date"),
-             ("alt_prdt_cd", "string"), ("ctcp_case_cnt", "int"),
-             ("ctcp_prm_amt", "decimal(18,2)")],
+            [("mktr_no", "string"), ("ctcp_prm_smy_edt", "date"),
+             ("alt_prdt_cd", "string"), ("mk_shr_ctcp_sld_qy", "int")],
             build_paid_cases(rng, marketers, as_of),
         ),
     ]

@@ -30,7 +30,7 @@ select
 
       c.mktr_no
 
-    , {{ period_buckets('c.cases_qty', 'c.paid_dt', 'cases', dates='d') }}
+    , {{ period_buckets('c.mk_shr_ctcp_sld_qy', 'c.ctcp_prm_smy_edt', 'cases', dates='d') }}
 
 from daily_cases c
 cross join dates d
@@ -39,9 +39,9 @@ cross join dates d
 -- explicit: a case whose product code is not in the product dimension does not
 -- count, because we cannot tell whether it is a life product.
 inner join products pr
-    on pr.product_cd = c.product_cd
+    on pr.alt_prdt_cd = c.alt_prdt_cd
 
-where c.paid_dt between d.cur_yr and d.cur_dt
-  and pr.product_line_cd = 'LF'
+where c.ctcp_prm_smy_edt between d.cur_yr and d.cur_dt
+  and pr.alt_prdt_line_cd = 'LF'
 
 group by c.mktr_no

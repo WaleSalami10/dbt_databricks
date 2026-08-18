@@ -14,7 +14,7 @@
 
         select
               mktr_no
-            , {{ period_buckets('fyc_amt', 'fyc_dt', 'fyc') }}
+            , {{ period_buckets('mk_shr_fyc_am', 'fyc_smy_edt', 'fyc') }}
         from ...
         group by mktr_no
 

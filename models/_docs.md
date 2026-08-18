@@ -16,7 +16,7 @@ Start of the validity window, inclusive. Type-2 history: the row describes the
 marketer's state from this timestamp until the matching end date.
 {% enddocs %}
 
-{% docs product_cd %}
+{% docs alt_prdt_cd %}
 Product code. Joins the daily paid-case summary to the product dimension, which
 is where the product line ('LF' for life) lives.
 {% enddocs %}

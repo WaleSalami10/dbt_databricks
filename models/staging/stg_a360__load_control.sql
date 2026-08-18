@@ -1,9 +1,10 @@
 /*
     ONE ROW: the date the whole report is "as of".
 
-    The load-control table holds a row per (target system, data feed). Only the
-    A360 / MK_DAILY feed matters here -- that is the feed the marketer tables
-    land on -- so this model filters to it and reduces to a single load date.
+    The load-control table holds a row per (target system, data subject). Only
+    the DASHBOARD / 'Life Premium/Paid Cases' row matters here -- that is the
+    feed the marketer tables land on -- so this model filters to it and reduces
+    to a single load date.
 
     Two things this model is deliberately doing:
 
@@ -30,27 +31,27 @@ with source as (
 
 ),
 
-mk_daily_feed as (
+dashboard_feed as (
 
     select
-        cast(ld_dt as timestamp) as load_dt
+        cast(ld_dt as timestamp) as ld_dt
 
     from source
 
-    where upper(trim(tgt_sys_cd))  = 'A360'
-      and upper(trim(src_feed_nm)) = 'MK_DAILY'
+    where upper(trim(tgt_sys_nm))      = 'DASHBOARD'
+      and upper(trim(common_data_name)) = 'LIFE PREMIUM/PAID CASES'
 
 )
 
 select
 
 {% if backfill_date == 'current_date' %}
-      max(load_dt)                                  as load_dt
+      max(ld_dt)                                  as ld_dt
 {% else %}
     -- Backfill run: pinned by the snapshot_date var, not by the feed. Still
     -- wrapped in max() so that this model returns exactly one row either way,
     -- however many rows the feed has.
-      max(cast('{{ backfill_date }}' as timestamp)) as load_dt
+      max(cast('{{ backfill_date }}' as timestamp)) as ld_dt
 {% endif %}
 
-from mk_daily_feed
+from dashboard_feed

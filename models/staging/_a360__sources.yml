@@ -21,8 +21,8 @@ sources:
     tables:
       - name: orap10_data_src_load_ctrl
         description: >
-          Load-control table. One row per (target system, data feed) telling us
-          the date the feed was last loaded. This is the source of truth for
+          Load-control table. One row per (target system, data subject) telling
+          us the date that feed was last loaded. This is the source of truth for
           "as of when" the whole report is built.
         config:
           # Cast because freshness requires a timestamp and this column is a
@@ -32,27 +32,32 @@ sources:
             warn_after: {count: 30, period: hour}
             error_after: {count: 48, period: hour}
         columns:
-          - name: tgt_sys_cd
-            description: Target system. The report reads the 'A360' rows.
-          - name: src_feed_nm
-            description: Feed name. The report reads the 'MK_DAILY' feed.
+          - name: tgt_sys_nm
+            description: Target system. The report reads the 'DASHBOARD' rows.
+          - name: common_data_name
+            description: >
+              Data subject the row tracks. The report reads
+              'Life Premium/Paid Cases'.
           - name: ld_dt
             description: Date the feed last landed. The report's as-of date.
 
       - name: orap10_mk_daly_fyc_join_mv
         description: Daily first-year-commission summary, one row per marketer per day.
         config:
-          loaded_at_field: "cast(fyc_dt as timestamp)"
+          loaded_at_field: "cast(fyc_smy_edt as timestamp)"
           freshness:
             warn_after: {count: 48, period: hour}
             error_after: {count: 96, period: hour}
         columns:
           - name: mktr_no
             description: Marketer number. Joins to orap10_mk_dashbrd.
-          - name: fyc_dt
-            description: Transaction date the commission is bucketed by.
-          - name: fyc_amt
-            description: First-year commission amount.
+          - name: fyc_smy_edt
+            description: Summary effective date the commission is bucketed by.
+          - name: mk_shr_fyc_am
+            description: >
+              The marketer's SHARE of the first-year commission, not the gross
+              amount. Splits are already applied upstream, so summing this
+              across marketers is the correct total.
 
       - name: orap10_mk_daly_ctcp_prm_smy
         description: >
@@ -60,14 +65,14 @@ sources:
           product.
         columns:
           - name: mktr_no
-          - name: ctcp_paid_dt
-            description: Paid date the case is bucketed by.
+          - name: ctcp_prm_smy_edt
+            description: Summary effective date the case is bucketed by.
           - name: alt_prdt_cd
             description: Product code. Joins to orap10_dash_alt_prdt_mv.
-          - name: ctcp_case_cnt
-            description: Number of paid cases.
-          - name: ctcp_prm_amt
-            description: Premium amount. Carried through staging but unused by the report.
+          - name: mk_shr_ctcp_sld_qy
+            description: >
+              The marketer's SHARE of the sold-case quantity. As with FYC, the
+              split is applied upstream.
 
       - name: orap10_dash_alt_prdt_mv
         description: Product dimension. Used to filter paid cases to life products.
@@ -76,7 +81,6 @@ sources:
             description: Product code, unique.
           - name: alt_prdt_line_cd
             description: Product line. 'LF' is life, which is all the report counts.
-          - name: alt_prdt_nm
 
       - name: orap10_mk_cls_hist
         description: >
@@ -85,7 +89,7 @@ sources:
         columns:
           - name: mktr_no
           - name: mk_cls_tp_cd
-            description: Class code. Labelled by the marketer_class_labels seed.
+            description: Class code. Labelled by the CASE block in fct_marketer_production.
           - name: mk_cls_edt
             description: Window start, inclusive.
           - name: mk_cls_xdt
@@ -99,8 +103,8 @@ sources:
           - name: mktr_no
           - name: mk_sts_tp_cd
             description: >
-              Contract status. The active_status_codes seed decides which of
-              these count as active.
+              Contract status. int_class_by_marketer and
+              int_marketer_contract decide which of these count as active.
           - name: mk_sts_atv_edt
             description: Window start, inclusive.
           - name: mk_sts_atv_xdt
@@ -125,8 +129,8 @@ sources:
             description: Title code. Joins to orap10_mk_ttl_tp.
           - name: mk_sts_tp_cd
             description: >
-              Dashboard status. Filtered by the
-              reportable_dashboard_status_codes seed.
+              Dashboard status. Filtered to ('01', '04', '1C') in
+              fct_marketer_production.
           - name: alt_org_unit_cd
             description: Org unit. Joins to orap10_cur_go_zone.
           - name: abreviated_nm
@@ -147,14 +151,15 @@ sources:
         description: General office and zone lookup.
         columns:
           - name: org_unit_cd
-          - name: go_nm
+          - name: org_unit_nm
+            description: General office name. Aliased to go_nm downstream, as in the source query.
           - name: zone_nm
 
       - name: orap10_mk_ttl_tp
         description: Job title lookup.
         columns:
           - name: mk_ttl_tp_cd
-          - name: mk_ttl_tp_dsc
+          - name: mk_ttl_tp_nm
             description: >
               Display text. The report matches the reportable-title list against
               an initcap() of this, not against the code -- see the README.
@@ -164,4 +169,4 @@ sources:
         columns:
           - name: mktr_no
           - name: pro_rata_ind
-          - name: cnt_atv_ind
+          - name: count_active

@@ -13,8 +13,7 @@ with source as (
 
 select
 
-      cast(trim(alt_prdt_cd) as string)         as product_cd
-    , upper(trim(alt_prdt_line_cd))             as product_line_cd
-    , cast(trim(alt_prdt_nm) as string)         as product_nm
+      cast(trim(alt_prdt_cd) as string)         as alt_prdt_cd
+    , upper(trim(alt_prdt_line_cd))             as alt_prdt_line_cd
 
 from source

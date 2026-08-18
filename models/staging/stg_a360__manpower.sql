@@ -1,11 +1,14 @@
 /*
     Manpower / headcount flags, one row per marketer.
 
-    The original query joined this table twice on the same key to produce
-    `prorata` and `prior_prorata`. With no predicate distinguishing the two
-    joins, both columns always held the same value; only one join survives in
-    the mart. See the README before wiring up a genuine prior-period version --
-    it needs a snapshot date this table does not currently expose.
+    The mart joins this table TWICE on the same key (mp / mpr), reproducing the
+    original query, to produce `prorata` and `prior_prorata`. With no predicate
+    distinguishing the two joins, those two columns always hold the same value.
+
+    A genuine prior-period version needs a snapshot date, and this table exposes
+    no column to write one against -- there is no effective-date or as-of column
+    here, only the current flags. That is the blocker, not the join. See the
+    README before attempting it.
 */
 
 with source as (
@@ -18,6 +21,6 @@ select
 
       cast(trim(mktr_no) as string) as mktr_no
     , cast(pro_rata_ind as int)     as pro_rata_ind
-    , cast(cnt_atv_ind as int)      as count_active
+    , cast(count_active as int)     as count_active
 
 from source

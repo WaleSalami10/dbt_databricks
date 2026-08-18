@@ -12,7 +12,7 @@ with source as (
 select
 
       cast(trim(org_unit_cd) as string)     as org_unit_cd
-    , cast(trim(go_nm) as string)           as general_office_nm
-    , cast(trim(zone_nm) as string)         as zone_nm
+    , cast(trim(org_unit_nm) as string)     as go_nm
+    , cast(trim(zone_nm) as string)         as zn_nm
 
 from source

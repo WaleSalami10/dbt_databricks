@@ -19,25 +19,25 @@
 
 with load_control as (
 
-    select load_dt from {{ ref('stg_a360__load_control') }}
+    select ld_dt from {{ ref('stg_a360__load_control') }}
 
 )
 
 select
 
-      load_dt                                                as cur_dt
+      ld_dt                                                as cur_dt
 
     -- Year boundaries
-    , add_months(date_trunc('year', load_dt), -36)           as yr_start_dt
+    , add_months(date_trunc('year', ld_dt), -36)           as yr_start_dt
     , dateadd(day, -1,
-        dateadd(year, 1, date_trunc('year', load_dt)))       as yr_end_dt
-    , date_trunc('year', load_dt)                            as cur_yr
+        dateadd(year, 1, date_trunc('year', ld_dt)))       as yr_end_dt
+    , date_trunc('year', ld_dt)                            as cur_yr
 
     -- Month boundaries
-    , add_months(date_trunc('month', load_dt), -1)           as prv_mnst
-    , date_trunc('month', load_dt) - interval 1 day          as prv_me
-    , date_trunc('month', load_dt)                           as cur_mnst
-    , cast(last_day(load_dt) as timestamp)                   as cur_month_end_dt
+    , add_months(date_trunc('month', ld_dt), -1)           as prv_mnst
+    , date_trunc('month', ld_dt) - interval 1 day          as prv_me
+    , date_trunc('month', ld_dt)                           as cur_mnst
+    , cast(last_day(ld_dt) as timestamp)                   as curr_month_enddate
 
     /*
         Week boundaries.
@@ -46,13 +46,13 @@ select
         shuffle below moves that to a SUNDAY-start week, which is what the
         business reports on. Do not "simplify" it away.
     */
-    , date_trunc('week', load_dt + interval '1 day')
+    , date_trunc('week', ld_dt + interval '1 day')
         - interval '1 day'                                   as cw_start_dt
-    , date_trunc('week', load_dt + interval '1 day')
+    , date_trunc('week', ld_dt + interval '1 day')
         - interval '1 day' + interval 6 day                  as cw_end_dt
-    , date_trunc('week', load_dt + interval '1 day')
+    , date_trunc('week', ld_dt + interval '1 day')
         - interval '8 days'                                  as prev_week_start
-    , date_trunc('week', load_dt + interval '1 day')
+    , date_trunc('week', ld_dt + interval '1 day')
         - interval '8 days' + interval 6 day                 as prev_week_end
 
 from load_control

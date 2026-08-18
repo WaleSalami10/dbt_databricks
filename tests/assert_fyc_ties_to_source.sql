@@ -32,12 +32,12 @@ from_source as (
 
     select
           f.mktr_no
-        , sum(f.fyc_amt) as fyc_ytd
+        , sum(f.mk_shr_fyc_am) as fyc_ytd
 
     from {{ ref('stg_a360__daily_fyc') }} f
     cross join dates d
 
-    where f.fyc_dt between d.cur_yr and d.cur_dt
+    where f.fyc_smy_edt between d.cur_yr and d.cur_dt
 
     group by f.mktr_no
 

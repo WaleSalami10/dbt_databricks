@@ -15,8 +15,8 @@ with source as (
 
 select
 
-      cast(trim(mktr_no) as string)     as mktr_no
-    , cast(fyc_dt as timestamp)         as fyc_dt
-    , cast(fyc_amt as decimal(18, 2))   as fyc_amt
+      cast(trim(mktr_no) as string)         as mktr_no
+    , cast(fyc_smy_edt as timestamp)        as fyc_smy_edt
+    , cast(mk_shr_fyc_am as decimal(18, 2)) as mk_shr_fyc_am
 
 from source

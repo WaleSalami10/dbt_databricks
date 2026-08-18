@@ -4,17 +4,18 @@ models:
 
   - name: stg_a360__load_control
     description: >
-      ONE ROW: the date the report is as of, taken from the A360 / MK_DAILY
-      feed's load date (or pinned by the `snapshot_date` var on a backfill).
+      ONE ROW: the date the report is as of, taken from the load date of the
+      DASHBOARD / 'Life Premium/Paid Cases' row in load control (or pinned by
+      the `snapshot_date` var on a backfill).
       Everything in the project ultimately anchors on this value, so a fault
       here is a fault everywhere -- hence the row-count test.
     columns:
-      - name: load_dt
+      - name: ld_dt
         description: The report's as-of date. Never current_date.
         data_tests:
           - not_null:
               description: >
-                Null means the MK_DAILY feed row is missing from load control.
+                Null means that row is missing from load control.
                 The calendar would then be entirely null and every period
                 bucket would come back empty rather than wrong, which is worse.
     data_tests:
@@ -31,10 +32,10 @@ models:
       - name: mktr_no
         description: '{{ doc("mktr_no") }}'
         data_tests: [not_null]
-      - name: fyc_dt
+      - name: fyc_smy_edt
         description: Transaction date the commission is bucketed by.
         data_tests: [not_null]
-      - name: fyc_amt
+      - name: mk_shr_fyc_am
         description: >
           First-year commission. Can legitimately be negative -- a chargeback
           reverses a prior payment -- so there is no positive-value test here.
@@ -46,7 +47,7 @@ models:
             multiple rows per marketer per day; the sums downstream still work,
             but the freshness assumption and any per-day reconciliation do not.
           arguments:
-            combination_of_columns: [mktr_no, fyc_dt]
+            combination_of_columns: [mktr_no, fyc_smy_edt]
 
   - name: stg_a360__daily_paid_cases
     description: >
@@ -58,8 +59,8 @@ models:
       - name: mktr_no
         description: '{{ doc("mktr_no") }}'
         data_tests: [not_null]
-      - name: product_cd
-        description: '{{ doc("product_cd") }}'
+      - name: alt_prdt_cd
+        description: '{{ doc("alt_prdt_cd") }}'
         data_tests:
           - not_null
           - relationships:
@@ -69,11 +70,11 @@ models:
                 only from the life-product counts. This test is the alarm.
               arguments:
                 to: ref('stg_a360__product')
-                field: product_cd
-      - name: paid_dt
+                field: alt_prdt_cd
+      - name: ctcp_prm_smy_edt
         description: Paid date. The date a case is bucketed by.
         data_tests: [not_null]
-      - name: cases_qty
+      - name: mk_shr_ctcp_sld_qy
         description: Number of paid cases.
         data_tests:
           - not_null
@@ -81,52 +82,54 @@ models:
               arguments:
                 min_value: 0
                 inclusive: true
-      - name: premium_amt
-        description: Carried through for completeness; the report does not use it.
     data_tests:
       - dbt_utils.unique_combination_of_columns:
           arguments:
-            combination_of_columns: [mktr_no, paid_dt, product_cd]
+            combination_of_columns: [mktr_no, ctcp_prm_smy_edt, alt_prdt_cd]
 
   - name: stg_a360__product
     description: Product dimension, one row per product code.
     columns:
-      - name: product_cd
-        description: '{{ doc("product_cd") }}'
+      - name: alt_prdt_cd
+        description: '{{ doc("alt_prdt_cd") }}'
         data_tests: [not_null, unique]
-      - name: product_line_cd
+      - name: alt_prdt_line_cd
         description: >
           Product line, upper-cased. 'LF' is the life line, the only one the
           paid-case counts include.
         data_tests: [not_null]
-      - name: product_nm
-        description: Product display name. Not used by the report.
 
   - name: stg_a360__class_history
     description: >
       Marketer class history. Type-2: one row per marketer per class, valid
-      between class_valid_from and class_valid_to inclusive.
+      between mk_cls_edt and mk_cls_xdt inclusive.
     columns:
       - name: mktr_no
         description: '{{ doc("mktr_no") }}'
         data_tests: [not_null]
-      - name: class_cd
-        description: Class code, labelled by the marketer_class_labels seed.
+      - name: mk_cls_tp_cd
+        description: Class code. Labelled by the CASE block in fct_marketer_production.
         data_tests:
           - not_null
-          - relationships:
+          - accepted_values:
               description: >
-                An unlabelled class code shows as a null label on the report
-                rather than as an error, so this test is the only warning.
+                A class code missing from the CASE block in
+                fct_marketer_production is not an error -- it renders as
+                'Other', which is what the ELSE in FOD_query.sql did. But
+                'Other' quietly appearing on the report is worth knowing about,
+                so this warns rather than passing.
+
+                These are the codes that CASE handles. Add a code there, add it
+                here.
               arguments:
-                to: ref('marketer_class_labels')
-                field: class_cd
+                values: [1, 2, 3, 4, 5, 10]
+                quote: false
               config:
                 severity: warn
-      - name: class_valid_from
+      - name: mk_cls_edt
         description: '{{ doc("valid_from") }}'
         data_tests: [not_null]
-      - name: class_valid_to
+      - name: mk_cls_xdt
         description: >
           Inclusive. Open-ended rows carry 9999-12-31 rather than null, which is
           what lets the point-in-time BETWEEN in int_class_by_marketer work
@@ -136,7 +139,7 @@ models:
       - dbt_utils.expression_is_true:
           description: A window that ends before it starts matches nothing, silently.
           arguments:
-            expression: "class_valid_to >= class_valid_from"
+            expression: "mk_cls_xdt >= mk_cls_edt"
       - dbt_utils.mutually_exclusive_ranges:
           description: >
             int_class_by_marketer picks a class with max(case when date between
@@ -145,8 +148,8 @@ models:
             answer, not an error. Gaps are allowed; a marketer can have periods
             with no class on record.
           arguments:
-            lower_bound_column: class_valid_from
-            upper_bound_column: class_valid_to
+            lower_bound_column: mk_cls_edt
+            upper_bound_column: mk_cls_xdt
             partition_by: mktr_no
             gaps: allowed
 
@@ -159,33 +162,33 @@ models:
       - name: mktr_no
         description: '{{ doc("mktr_no") }}'
         data_tests: [not_null]
-      - name: status_cd
+      - name: mk_sts_tp_cd
         description: >
-          Contract status. The active_status_codes seed decides which values
-          count as active; both int_class_by_marketer and int_marketer_contract
-          filter through that one seed, so they cannot disagree.
+          Contract status. int_class_by_marketer and int_marketer_contract
+          each carry the same ten-code IN list deciding which values count as
+          active -- FOD_query.sql lines 71-73 and 169-171. Keep them in sync.
         data_tests: [not_null]
-      - name: status_valid_from
+      - name: mk_sts_atv_edt
         description: '{{ doc("valid_from") }}'
         data_tests: [not_null]
-      - name: status_valid_to_raw
+      - name: mk_sts_atv_xdt_raw
         description: The source end date, untouched. May contain the 9999 sentinel.
         data_tests: [not_null]
-      - name: status_valid_to
-        description: status_valid_to_raw as a timestamp, sentinel resolved to 9999-12-31.
+      - name: mk_sts_atv_xdt
+        description: mk_sts_atv_xdt_raw as a timestamp, sentinel resolved to 9999-12-31.
         data_tests: [not_null]
     data_tests:
       - dbt_utils.expression_is_true:
           arguments:
-            expression: "status_valid_to >= status_valid_from"
+            expression: "mk_sts_atv_xdt >= mk_sts_atv_edt"
       - dbt_utils.mutually_exclusive_ranges:
           description: >
             Overlapping status windows would let one marketer be both active and
             terminated on the same date, which int_marketer_contract would turn
             into two contract rows and the mart into a duplicated marketer.
           arguments:
-            lower_bound_column: status_valid_from
-            upper_bound_column: status_valid_to
+            lower_bound_column: mk_sts_atv_edt
+            upper_bound_column: mk_sts_atv_xdt
             partition_by: mktr_no
             gaps: allowed
 
@@ -224,7 +227,7 @@ models:
                 severity: warn
       - name: mk_sts_tp_cd
         description: >
-          Dashboard status, filtered against reportable_dashboard_status_codes.
+          Dashboard status, filtered in fct_marketer_production against ('01', '04', '1C').
           Deliberately a different list from the contract statuses in
           active_status_codes.
       - name: alt_org_unit_cd
@@ -271,23 +274,23 @@ models:
       - name: org_unit_cd
         description: '{{ doc("org_unit_cd") }}'
         data_tests: [not_null, unique]
-      - name: general_office_nm
+      - name: go_nm
         description: General office name, as shown on the report.
         data_tests: [not_null]
-      - name: zone_nm
+      - name: zn_nm
         description: Zone name, as shown on the report.
         data_tests: [not_null]
 
   - name: stg_a360__title_type
     description: >
-      Job title lookup. title_nm is initcap()'d because the report matches
+      Job title lookup. ttl_nm is initcap()'d because the report matches
       titles on display text rather than on the code -- see the model header.
     columns:
       - name: mk_ttl_tp_cd
         description: '{{ doc("title_cd") }}'
         data_tests: [not_null, unique]
-      - name: title_nm
-        description: Initcap'd display text. Matched against the reportable_titles seed.
+      - name: ttl_nm
+        description: Initcap'd display text. Matched against the title list in fct_marketer_production.
         data_tests: [not_null, unique]
 
   - name: stg_a360__manpower
