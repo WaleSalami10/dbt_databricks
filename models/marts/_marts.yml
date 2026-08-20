@@ -242,3 +242,144 @@ models:
             can never have more rows than the dimension it filters.
           arguments:
             compare_model: ref('stg_a360__marketer_dashboard')
+
+  - name: fct_cap_candidate
+    description: >
+      One row per triggered marketer per candidate assessment: the CAP scores of
+      candidates attached to marketers whose recruiting credit triggered this
+      year, with the office, zone and recruiter that credit belongs to.
+
+      The replacement for the CAP query. It is NOT one row per candidate: a
+      candidate assessed twice appears twice, and a candidate attached to two
+      triggered marketers appears once per marketer. Deduplicate deliberately if
+      a count of candidates is what you need -- see the grain note on
+      int_candidate_cap_score.
+
+      triggered_flg and ytd_trigger are constant 'Y'. They are reproduced from
+      the original, and the tests below pin them so that stops being invisible.
+      Read the model header before using either.
+    config:
+      contract:
+        enforced: false
+    columns:
+
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }} Here, the triggered marketer.'
+        data_tests: [not_null]
+      - name: rcr_no
+        description: The recruiting marketer the credit belongs to.
+        data_tests: [not_null]
+      - name: candidate_id
+        description: >
+          The assessed candidate. Never null on the report: the score filter
+          removes rows that got this far without a candidate.
+        data_tests: [not_null]
+      - name: marketer_id
+        description: EDH marketer id the candidate is attached to (can_mktr_id).
+      - name: recrt_mktr_id
+        description: Recruiting marketer id as EDH records it.
+      - name: recruiter_name
+        description: >
+          The ODS recruiter name, falling back to the a360 name when the ODS has
+          none. Null only if both are missing.
+      - name: candidate_name
+        description: >
+          The candidate's name, decrypted here and nowhere else -- this is the
+          only model in the project that calls
+          protegrity.unprotect_clientname(), and the only one that materialises
+          names into a table. Whoever can select this table can read them, so
+          grant on it deliberately. No test reads this column on purpose: a
+          failing test writes sample rows to the failures schema.
+
+      - name: zone_cd
+        description: Zone code of the marketer's ORIGINAL org unit.
+      - name: go_code
+        description: Original org unit code -- the report's general-office code.
+      - name: go_nm
+        description: General office name.
+      - name: zone_name
+        description: Zone name.
+
+      - name: split
+        description: Share of the recruiting credit, passed through from marketer history.
+      - name: stage
+        description: The candidate's pipeline stage (can_stg_nm).
+      - name: cap_date
+        description: Date the assessment was completed.
+      - name: cap_score
+        description: >
+          The CAP fit score, exactly as the source stores it -- text, not a
+          number. Cast it before comparing, or use cap_score_75plus.
+        data_tests: [not_null]
+      - name: cap_score_75plus
+        description: '"Y" when the score is 75 or better.'
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+      - name: pts_date
+        description: >
+          Effective date of the candidate's marketer's current contract. Null
+          when no contract covers the report date.
+      - name: cur_dt
+        description: >
+          The report's as-of date, from the calendar. Constant across the table,
+          carried so a saved extract still says what day it describes.
+        data_tests: [not_null]
+
+      - name: triggered_flg
+        description: >
+          Constant 'Y'. Tests a column that cannot be null on the driving table
+          of an inner-joined CTE. Kept for compatibility with the original
+          query; see the model header.
+        data_tests:
+          - accepted_values:
+              description: >
+                Pins the constant. The day this fails, the model has started
+                including untriggered marketers -- which is a real improvement,
+                not a defect. Delete this test and the header note together.
+              arguments:
+                values: ['Y']
+      - name: ytd_trigger
+        description: >
+          Constant 'Y'. int_triggered_marketers has already filtered the trigger
+          date to the current year to date, so this restates a filter rather
+          than testing anything.
+        data_tests:
+          - accepted_values:
+              description: As with triggered_flg -- pins a constant so it cannot drift unnoticed.
+              arguments:
+                values: ['Y']
+
+      - name: ea_pgm_ind
+        description: >
+          Enhanced-agreement indicator. Every row on the report has this = 'T'
+          or a '%TAS%' contract type; the two are not exclusive.
+      - name: mk_cnt_tp_nm
+        description: Contract type in force on the trigger date.
+        data_tests: [not_null]
+
+    data_tests:
+      - dbt_utils.expression_is_true:
+          description: >
+            Restates the qualifying rule. It fails only if the WHERE clause
+            stops being applied -- which is exactly the change worth catching,
+            since dropping it widens the report silently rather than emptying it.
+          arguments:
+            expression: "ea_pgm_ind = 'T' or mk_cnt_tp_nm like '%TAS%'"
+      - dbt_utils.expression_is_true:
+          description: >
+            The 75+ flag agrees with the score it is derived from. Guards the
+            text-to-decimal cast: a score column that stops parsing makes every
+            flag 'N' while cap_score still looks fine.
+          arguments:
+            expression: >
+              cap_score_75plus =
+                case when cast(cap_score as decimal(10,2)) >= 75 then 'Y' else 'N' end
+      - dbt_utils.expression_is_true:
+          description: An assessment cannot have been completed after the report date.
+          arguments:
+            expression: "cap_date <= cur_dt"
+          config:
+            severity: warn

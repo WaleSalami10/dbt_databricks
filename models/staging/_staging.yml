@@ -251,8 +251,10 @@ models:
 
   - name: stg_a360__marketer_appointment
     description: >
-      Original appointment date per marketer. Expected to be one row per
-      marketer -- see the model header for what to do if it stops being that.
+      Marketer history: the original appointment date and the recruiting
+      relationship. Expected to be one row per marketer -- see the model header
+      for what to do if it stops being that. The name predates the recruiting
+      columns; both sets come off the same source table.
     columns:
       - name: mktr_no
         description: '{{ doc("mktr_no") }}'
@@ -262,11 +264,36 @@ models:
               description: >
                 The mart inner-joins this on mktr_no, so a second row per
                 marketer doubles that marketer's row and every measure on it.
-                This is the test the removed `select distinct` used to hide.
+                This is the test the removed `select distinct` used to hide, and
+                it now guards int_triggered_marketers as well.
       - name: orig_appt_dt
         description: >
           Drives the six-month new-agent window and the active-on-date flags.
         data_tests: [not_null]
+      - name: rcr_no
+        description: >
+          The recruiting marketer. int_triggered_marketers joins the dashboard
+          dimension on it INNER, so a marketer whose recruiter is missing from
+          that dimension drops off the CAP report.
+        data_tests:
+          - relationships:
+              config:
+                severity: warn
+              arguments:
+                to: ref('stg_a360__marketer_dashboard')
+                field: mktr_no
+      - name: orig_org_unit_cd
+        description: >
+          The marketer's ORIGINAL org unit. The CAP report resolves office and
+          zone from this; fct_marketer_production uses the recruiter's current
+          unit instead. The two reports can disagree for a marketer who moved,
+          and that is not a bug in either.
+      - name: split
+        description: Share of the recruiting credit. Passed through to the mart untouched.
+      - name: rcr_elig_dt
+        description: >
+          Recruiting-eligibility date -- when the credit triggered. The current
+          year-to-date filter on it is what defines the CAP report's population.
 
   - name: stg_a360__org_zone
     description: General office and zone lookup, one row per org unit.
@@ -313,3 +340,240 @@ models:
               arguments:
                 values: [0, 1]
                 quote: false
+
+  # ---------------------------------------------------------------------------
+  # CAP report -- see fct_cap_candidate.
+  # ---------------------------------------------------------------------------
+
+  - name: stg_a360__contract_active
+    description: >
+      Marketer contract history, one row per marketer per contract window.
+      Distinct from stg_a360__marketer_status, which is STATUS history off a
+      different table -- read the model header before joining either.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: mk_cnt_tp_cd
+        description: Contract type. Joins to stg_a360__contract_type.
+        data_tests:
+          - not_null
+          - relationships:
+              description: >
+                int_triggered_marketers joins the type lookup INNER. A contract
+                whose type is missing from it drops the marketer from the CAP
+                report entirely, and silently.
+              arguments:
+                to: ref('stg_a360__contract_type')
+                field: mk_cnt_tp_cd
+      - name: mk_cnt_edt
+        description: '{{ doc("valid_from") }}'
+        data_tests: [not_null]
+      - name: mk_cnt_xdt
+        description: Window end, inclusive, 9999 sentinel resolved to 9999-12-31.
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.expression_is_true:
+          description: A contract cannot end before it starts.
+          arguments:
+            expression: "mk_cnt_xdt >= mk_cnt_edt"
+      - dbt_utils.unique_combination_of_columns:
+          description: >
+            One window per marketer per contract start. Overlapping windows are
+            the thing that fans int_triggered_marketers out, and this is the
+            closest cheap approximation of a check for them.
+          arguments:
+            combination_of_columns: [mktr_no, mk_cnt_edt]
+
+  - name: stg_a360__contract_type
+    description: >
+      Contract type lookup. mk_cnt_tp_nm keeps the source's casing on purpose --
+      fct_cap_candidate matches '%TAS%' against it, case-sensitively.
+    columns:
+      - name: mk_cnt_tp_cd
+        description: Contract type code.
+        data_tests: [not_null, unique]
+      - name: mk_cnt_tp_nm
+        description: Display text, source casing. Matched against '%TAS%' in the mart.
+        data_tests: [not_null]
+
+  - name: stg_a360__marketer
+    description: >
+      Marketer master, one row per marketer. Joined by int_triggered_marketers
+      for ea_pgm_ind -- and, because that join is inner, as a filter.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null, unique]
+      - name: ea_pgm_ind
+        description: >
+          Enhanced-agreement program indicator. 'T' is one of the two ways a row
+          qualifies for the CAP report. No accepted_values test: the full domain
+          is not documented anywhere, and guessing it would turn an unknown
+          value into a build failure rather than a question.
+
+  - name: stg_a360__org_zone_vg
+    description: >
+      Office and zone lookup, the _vg variant -- carries zone_cd, which
+      stg_a360__org_zone does not. Used by the CAP report only.
+    columns:
+      - name: org_unit_cd
+        description: '{{ doc("org_unit_cd") }}'
+        data_tests: [not_null, unique]
+      - name: go_nm
+        description: General office name.
+        data_tests: [not_null]
+      - name: zone_cd
+        description: Zone code.
+        data_tests: [not_null]
+      - name: zone_nm
+        description: Zone name.
+        data_tests: [not_null]
+
+  - name: stg_aurora__epm_producer
+    description: >
+      EPM case, producer side. The bridge from an a360 marketer number to a
+      candidate, and the place the text-to-integer marketer-number
+      normalisation happens.
+    columns:
+      - name: epm_case_id
+        description: EPM case identifier.
+        data_tests: [not_null]
+      - name: producer_num
+        description: Marketer number as the source stores it, text and padded.
+      - name: producer_mktr_no
+        description: >
+          producer_num normalised through nullif/trim/int, then back to string,
+          so it joins to mktr_no. Null when producer_num is blank; those rows
+          are dropped by int_candidate_cap_score because they can never match.
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+                warn_if: ">100"
+              description: >
+                A handful of blank producer numbers is normal. Hundreds means
+                the column has changed shape -- most likely it stopped being
+                numeric, in which case the cast is quietly nulling real
+                producers and the CAP report is losing rows.
+          - relationships:
+              config:
+                severity: warn
+              description: >
+                A producer number with no marketer behind it contributes
+                nothing: the mart joins on it and finds nothing. Warn, because
+                EPM cases legitimately outlive marketer records.
+              arguments:
+                to: ref('stg_a360__marketer')
+                field: mktr_no
+
+  - name: stg_aurora__epm_candidate
+    description: EPM case, candidate side. Pure bridge table.
+    columns:
+      - name: epm_case_id
+        description: EPM case identifier. Joins to stg_aurora__epm_producer.
+        data_tests: [not_null]
+      - name: candidate_id
+        description: Candidate identifier. Joins to agent_candidate_lead.can_id_nk.
+        data_tests: [not_null]
+
+  - name: stg_lake_aurora__agent_candidate_lead
+    description: >
+      Candidate leads, one row per VERSION of a lead -- the live-row filter
+      (edh_record_status_in = 'A') is applied downstream, in
+      int_candidate_cap_score, not here.
+    columns:
+      - name: can_id_nk
+        description: Candidate natural key.
+        data_tests: [not_null]
+      - name: can_mktr_id
+        description: The marketer the candidate is attached to. The ODS key, not a360's.
+      - name: recrt_mktr_id
+        description: Recruiting marketer id, reported by the mart as-is.
+      - name: can_recrt_nm
+        description: >
+          Recruiter name per the ODS. The mart prefers it over the a360-built
+          name and falls back when it is null, so nulls here are expected.
+      - name: can_full_nm_protected
+        description: >
+          The candidate's name, still PROTECTED. Ciphertext until
+          fct_cap_candidate runs it through protegrity.unprotect_clientname().
+          Do not add a test that prints it; a failing test writes sample rows
+          into the failures schema.
+      - name: can_stg_nm
+        description: Pipeline stage. Reported as `stage`.
+      - name: edh_record_status_in
+        description: ODS soft delete. 'A' is live.
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          description: >
+            One LIVE row per candidate. If this fails, int_candidate_cap_score
+            fans out and a candidate is counted twice in the CAP report.
+          arguments:
+            combination_of_columns: [can_id_nk, edh_record_status_in]
+
+  - name: stg_lake_aurora__candidate_assessment_score
+    description: >
+      CAP assessment scores. fit_score_val is exposed as both the source's text
+      and a decimal, because the original query reported the one and compared
+      the other.
+    columns:
+      - name: can_id_nk
+        description: Candidate natural key. Joins to the lead.
+        data_tests: [not_null]
+      - name: fit_score_val
+        description: The score exactly as stored. This is what the mart reports.
+      - name: fit_score_val_num
+        description: >
+          The same value as a decimal, for the >= 75 comparison. Null when the
+          text will not parse.
+        data_tests:
+          - not_null:
+              config:
+                severity: warn
+              description: >
+                A row that reaches here with a non-numeric score is reported by
+                the mart with cap_score_75plus = 'N' regardless of what it says.
+                Warn rather than error: the report is still correct about every
+                other row, but somebody should look.
+          - dbt_utils.accepted_range:
+              config:
+                severity: warn
+              description: >
+                CAP scores are a 0-100 fit score. Out of range means the column
+                has changed meaning, and the 75 threshold with it.
+              arguments:
+                min_value: 0
+                max_value: 100
+                inclusive: true
+      - name: cmpl_dt
+        description: Completion date. Reported as cap_date.
+      - name: edh_record_status_in
+        description: ODS soft delete. 'A' is live.
+        data_tests: [not_null]
+
+  - name: stg_aurora__marketer_contract
+    description: >
+      Contract windows keyed by the ODS marketer id. Unrelated to
+      int_marketer_contract despite the name -- different key, different source,
+      different report.
+    columns:
+      - name: mktr_id
+        description: ODS marketer id. Joins to agent_candidate_lead.can_mktr_id.
+        data_tests: [not_null]
+      - name: cnt_eff_dt
+        description: Contract effective date. Reported as pts_date.
+        data_tests: [not_null]
+      - name: cnt_exp_dt
+        description: Contract expiry date.
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.expression_is_true:
+          description: >
+            A contract cannot expire before it takes effect. The mart's pts_date
+            join is a BETWEEN on these two, and an inverted window matches
+            nothing -- so this failing shows up downstream as a null pts_date,
+            not as an error.
+          arguments:
+            expression: "cnt_exp_dt >= cnt_eff_dt"

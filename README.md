@@ -31,6 +31,37 @@ sources (a360 mart, read-only)
          fct_marketer_production    ← the final SELECT
 ```
 
+A second report, the **CAP report**, is layered on the same staging models plus
+the EDH candidate tables. Same idea, same rules:
+
+```
+sources (a360 mart + two Aurora ODS schemas, all read-only)
+   │
+   ├─ staging/
+   │     stg_a360__contract_active         ← contract windows (NOT status windows)
+   │     stg_a360__contract_type           ← contract type lookup, source casing kept
+   │     stg_a360__marketer                ← marketer master, carries ea_pgm_ind
+   │     stg_a360__org_zone_vg             ← office / zone, the _vg variant, has zone_cd
+   │     stg_a360__marketer_appointment    ← ALSO carries rcr_no / split / rcr_elig_dt
+   │     stg_aurora__epm_producer          ← producer→case bridge, normalises producer_num
+   │     stg_aurora__epm_candidate         ← case→candidate bridge
+   │     stg_lake_aurora__agent_candidate_lead       ← candidate leads, ODS soft delete
+   │     stg_lake_aurora__candidate_assessment_score ← CAP scores, text and decimal
+   │     stg_aurora__marketer_contract     ← ODS contract windows, supplies PTS date
+   │
+   ├─ intermediate/
+   │     int_triggered_marketers     ← the `trig` CTE. inner joins = silent filters
+   │     int_candidate_cap_score     ← the five-left-join candidate chain
+   │
+   └─ marts/
+         fct_cap_candidate          ← the final SELECT
+```
+
+The two marts share `int_reporting_periods`, so both anchor on the same as-of
+date and both honour `snapshot_date`. They deliberately do **not** share an
+office lookup: the production report resolves the office from the recruiter's
+*current* org unit, the CAP report from the marketer's *original* one.
+
 Each CTE in the original became one model. That is the whole idea: instead of a
 single 182-line block you can only run start-to-finish, you get six pieces you
 can `dbt run --select int_fyc_by_marketer` and inspect on their own.
@@ -265,6 +296,83 @@ under [Testing](#testing). Every model and column is documented in the
    or renamed to "Managing Partner (Field)", silently drops those marketers from
    the report with no error. Matching on `mk_ttl_tp_cd` instead would be robust;
    swap the `reportable_titles` var for a list of codes once you can look them up.
+
+## Before you run the CAP report
+
+Three things worth a look, none of them guessable from the SQL:
+
+1. **Where the Aurora tables resolve to.** The candidate tables span two
+   schemas — `ext_aurora_ods_producer2` (producer, candidate, marketer
+   contract) and `ext_lake_aurora_ods_producer2` (leads, assessment scores) —
+   declared as two sources in `_aurora__sources.yml` with no `database:` or
+   `schema:` config on either. dbt therefore reads the schema from the source
+   NAME, which is why each is named for the schema it reads, and the catalog
+   from the connection — the same thing the original query's unqualified table
+   names relied on. Nothing to configure; just confirm the profile points at
+   the catalog those schemas live in.
+
+2. **The protegrity grant.** `fct_cap_candidate` is the only model that calls
+   `protegrity.unprotect_clientname()`, and it needs EXECUTE on that UDF for
+   whoever runs dbt. Without it the build fails outright rather than returning
+   ciphertext — which is the right way round, but it will be the first thing
+   that stops a fresh run.
+
+3. **Which table four columns come from.** `orig_org_unit_cd`, `split`,
+   `rcr_elig_dt` and `ea_pgm_ind` are unqualified in the original's `trig` CTE,
+   which joins five tables at once. They are read here as marketer history's
+   (the first three) and the marketer master's (`ea_pgm_ind`) — the tables they
+   belong to by meaning. Check the DDL before anyone reconciles a split.
+
+**`fct_cap_candidate` holds candidate names.** It is the only table in the
+project that does: the protegrity decrypt runs there and nowhere else, every
+staging view carries the name as ciphertext, and no test reads the column (a
+failing test would write sample rows into the failures schema). Grant on that
+table deliberately.
+
+`use_dummy_data: true` does not cover the CAP report:
+`scripts/generate_dummy_data.py` knows about the eleven a360 tables the
+production report uses and nothing else. The four new a360 tables and the five
+Aurora ODS ones have no stand-ins, so `dbt build --vars '{use_dummy_data: true}'`
+builds the production report and fails on this one. Extending the generator is
+the obvious next job.
+
+## Four things to confirm in the CAP report
+
+1. **`triggered_flg` and `ytd_trigger` are constants.** Both come out `'Y'` on
+   every row. `triggered_flg` tests `t.mktr_no is null` on the driving table of
+   an inner-joined CTE; `ytd_trigger` re-tests a year-to-date window that
+   `int_triggered_marketers` has already applied as a filter. Reproduced from
+   the original and pinned by `accepted_values` tests, so the day either stops
+   being constant the build says so. **Do not read either as evidence that a
+   marketer triggered.** Both become meaningful if the report is widened to
+   include untriggered marketers — turn the window in `int_triggered_marketers`
+   into a flag rather than a filter.
+
+2. **The grain is not one row per candidate.** It is one row per triggered
+   marketer per live assessment. A candidate assessed twice appears twice; a
+   candidate under two triggered marketers appears twice. Count candidates with
+   an explicit `count(distinct candidate_id)`, or add the "latest assessment
+   only" rule to `int_candidate_cap_score`, where it belongs.
+
+3. **`'%TAS%'` is case-sensitive substring matching on display text** — the same
+   fragility as the title list above, in the qualifying `WHERE` clause this
+   time. A contract type renamed to `'Tas Producer'` silently stops qualifying.
+   `stg_a360__contract_type` exposes `mk_cnt_tp_cd` alongside the name so the
+   match can move onto codes once someone confirms which ones are meant.
+
+4. **Every join in `int_triggered_marketers` is inner**, so four different
+   things drop a marketer from the report without an error: no contract window
+   covering the trigger date, a contract type missing from the lookup, the
+   marketer missing from the master, the recruiter missing from the dashboard
+   dimension. `dbt_utils.at_least_one` on that model catches the total wipeout;
+   the `relationships` tests in `_staging.yml` catch the partial ones.
+
+One thing the CAP translation changed on purpose, beyond dropping the
+`limit 10`: `current_date` became `cur_dt`, since the original mixed the load
+date and `current_date` in the same query. The join to `orap10_mk_dashbrd`
+(`mk`) that selects no column is kept as the original had it — inert as long as
+the `unique` test on that dimension's `mktr_no` passes, and a doubled report if
+it ever stops.
 
 ## Where to go next
 

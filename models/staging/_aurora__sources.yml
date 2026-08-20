@@ -1,0 +1,102 @@
+version: 2
+
+sources:
+
+  # The candidate/recruiting tables sit in TWO schemas, not one. The CAP query
+  # reads epm_producer, epm_candidate and marketer_contract from
+  # ext_aurora_ods_producer2, and agent_candidate_lead and
+  # candidate_assessment_score from ext_lake_aurora_ods_producer2. They are
+  # declared as two sources for that reason -- one source with a mixed schema
+  # would be a lie the first time somebody added a table to it.
+  #
+  # Neither carries a `database:` or `schema:` line. dbt falls back to the
+  # source's own NAME as the schema, which is why these two are named for the
+  # schemas they read, and to the connection's catalog, which is what the
+  # original query's unqualified table names resolved against anyway.
+
+  - name: ext_aurora_ods_producer2
+    description: >
+      Aurora ODS producer tables -- the producer/case bridge and the marketer
+      contract windows behind the CAP report's PTS date.
+    tables:
+      - name: epm_producer
+        description: >
+          Producer side of the EPM case. The bridge from an a360 marketer number
+          to an EPM case, and from there to a candidate.
+        columns:
+          - name: epm_case_id
+            description: EPM case identifier. Joins to epm_candidate.
+          - name: producer_num
+            description: >
+              Marketer number as TEXT, blank-padded and sometimes empty. The
+              original cast it through nullif/trim to an integer to join it to
+              a360's mktr_no; staging does the same normalisation once.
+
+      - name: epm_candidate
+        description: Candidate side of the EPM case.
+        columns:
+          - name: epm_case_id
+          - name: candidate_id
+            description: Candidate identifier. Joins to agent_candidate_lead.can_id_nk.
+
+      - name: marketer_contract
+        description: >
+          Contract windows for a marketer, keyed by the ODS marketer id rather
+          than a360's marketer number. Supplies the PTS date.
+        columns:
+          - name: mktr_id
+            description: ODS marketer id. Joins to agent_candidate_lead.can_mktr_id.
+          - name: cnt_eff_dt
+            description: Contract effective date. Reported as pts_date.
+          - name: cnt_exp_dt
+            description: Contract expiry date.
+
+  - name: ext_lake_aurora_ods_producer2
+    description: >
+      Lake-side Aurora ODS tables -- the candidate leads and their CAP
+      assessment scores. Same ODS, different schema from
+      ext_aurora_ods_producer2; the CAP query reads both in one join and so
+      does this project.
+    tables:
+      - name: agent_candidate_lead
+        description: >
+          One row per candidate lead: who is recruiting them, which marketer
+          they are attached to, and how far through the pipeline they are.
+          Carries EDH's soft-delete flag.
+        columns:
+          - name: can_id_nk
+            description: Candidate natural key.
+          - name: can_mktr_id
+            description: The marketer the candidate is attached to. Joins to marketer_contract.mktr_id.
+          - name: recrt_mktr_id
+            description: Recruiting marketer id, reported as-is.
+          - name: can_recrt_nm
+            description: >
+              Recruiter name as the ODS records it. Preferred over the a360
+              recruiter name in the mart, which falls back to a360 when it is null.
+          - name: can_full_nm
+            description: >
+              The candidate's name, PROTECTED. It is ciphertext at rest and only
+              becomes a name through protegrity.unprotect_clientname(), which
+              the mart calls -- see fct_cap_candidate.
+          - name: can_stg_nm
+            description: Pipeline stage. Reported as `stage`.
+          - name: edh_record_status_in
+            description: >
+              EDH record status. 'A' is the live row; anything else is a
+              superseded or deleted version and is filtered out upstream of the mart.
+
+      - name: candidate_assessment_score
+        description: >
+          CAP assessment results, one row per candidate per completed
+          assessment. Carries the same soft-delete flag.
+        columns:
+          - name: can_id_nk
+          - name: fit_score_val
+            description: >
+              The CAP fit score. Stored as text, which is why every comparison
+              casts it -- see stg_lake_aurora__candidate_assessment_score.
+          - name: cmpl_dt
+            description: Assessment completion date. Reported as cap_date.
+          - name: edh_record_status_in
+            description: As above -- 'A' is the live row.

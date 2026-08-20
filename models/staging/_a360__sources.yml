@@ -139,13 +139,32 @@ sources:
           - name: mk_lst_nm
 
       - name: orap10_mk_history
-        description: Marketer history, source of the original appointment date.
+        description: >
+          Marketer history. Source of the original appointment date, and of the
+          recruiting relationship (rel_mktr_no / split / rcr_elig_dt) the CAP
+          models are built on. Assumed one row per marketer -- see the unique
+          test on stg_a360__marketer_appointment.
         columns:
           - name: mktr_no
           - name: orig_appt_dt
             description: >
               Original appointment date. Drives the six-month new-agent window
               and every "actively contracted on date X" flag in the mart.
+          - name: rel_mktr_no
+            description: >
+              The related (recruiting) marketer. Joined to orap10_mk_dashbrd to
+              get the recruiter's name in int_triggered_marketers.
+          - name: orig_org_unit_cd
+            description: >
+              The marketer's original org unit. fct_cap_candidate resolves the
+              office and zone from THIS, not from the current unit.
+          - name: split
+            description: Share of the recruiting credit, carried through to the mart as-is.
+          - name: rcr_elig_dt
+            description: >
+              Recruiting-eligibility date -- the date the recruiting credit
+              triggered. int_triggered_marketers keeps only rows whose value
+              falls in the current year to date.
 
       - name: orap10_cur_go_zone
         description: General office and zone lookup.
@@ -170,3 +189,56 @@ sources:
           - name: mktr_no
           - name: pro_rata_ind
           - name: count_active
+
+      - name: orap10_mk_cnt_atv
+        description: >
+          Marketer CONTRACT history (distinct from orap10_mk_sts_atv, which is
+          status history), with mk_cnt_edt / mk_cnt_xdt marking the effective
+          window. int_triggered_marketers uses it to find the contract in force
+          on the marketer's recruiting-eligibility date.
+        columns:
+          - name: mktr_no
+          - name: mk_cnt_tp_cd
+            description: Contract type. Joins to orap10_mk_cnt_tp.
+          - name: mk_cnt_edt
+            description: Window start, inclusive.
+          - name: mk_cnt_xdt
+            description: >
+              Window end, inclusive. Assumed to carry the same 9999 sentinel as
+              the status table; staging resolves it the same way.
+
+      - name: orap10_mk_cnt_tp
+        description: Contract type lookup.
+        columns:
+          - name: mk_cnt_tp_cd
+          - name: mk_cnt_tp_nm
+            description: >
+              Display text. fct_cap_candidate matches '%TAS%' against it, which
+              is text matching and as fragile as the title matching -- see the
+              README.
+
+      - name: orap10_marketer
+        description: >
+          Marketer master. The CAP query joins it for ea_pgm_ind alone; that
+          join is also what restricts the trigger population to marketers
+          present in the master.
+        columns:
+          - name: mktr_no
+          - name: ea_pgm_ind
+            description: >
+              Enhanced-agreement program indicator. 'T' is one of the two ways a
+              row qualifies for fct_cap_candidate.
+
+      - name: orap10_cur_go_zone_vg
+        description: >
+          General office and zone lookup, the _vg variant. Unlike
+          orap10_cur_go_zone it also carries zone_cd. The CAP query joins this
+          one on the marketer's ORIGINAL org unit; the production report joins
+          the other on the recruiter's current one. They are not
+          interchangeable.
+        columns:
+          - name: org_unit_cd
+          - name: org_unit_nm
+            description: General office name. Aliased to go_nm downstream.
+          - name: zone_cd
+          - name: zone_nm

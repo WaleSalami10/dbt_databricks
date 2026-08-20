@@ -254,3 +254,93 @@ models:
       - dbt_utils.expression_is_true:
           arguments:
             expression: "contractenddate >= mk_sts_atv_edt"
+
+  - name: int_triggered_marketers
+    description: >
+      Marketers whose recruiting credit triggered in the current year to date,
+      with the contract type in force on the trigger date and the recruiter's
+      display name. The `trig` CTE of the CAP query.
+
+      Every join is inner, so this model is a filter as much as a join -- read
+      the model header for the four ways a marketer can silently disappear from
+      it before investigating a missing row in fct_cap_candidate.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }} The recruited marketer.'
+        data_tests:
+          - not_null
+          - unique:
+              description: >
+                One trigger row per marketer. This can only fail through
+                overlapping contract windows (or duplicate marketer history),
+                and when it does, every candidate under that marketer is
+                counted twice in the CAP report. Fix the window; do not
+                deduplicate downstream.
+          - dbt_utils.at_least_one:
+              description: >
+                Empty here means an empty CAP report. The likeliest causes are
+                a load-control date outside the trigger window and a contract
+                type lookup that stopped matching -- both silent, both
+                indistinguishable from "nobody triggered this year" without
+                this test.
+      - name: rcr_no
+        description: The recruiting marketer whose name carries the credit.
+        data_tests: [not_null]
+      - name: rcr_name
+        description: >
+          Recruiter's display name, initcap'd, built from the dashboard
+          dimension. The mart prefers EDH's own recruiter name over it.
+      - name: orig_org_unit_cd
+        description: The marketer's original org unit. Resolves to office and zone in the mart.
+      - name: split
+        description: Share of the recruiting credit.
+      - name: rcr_elig_dt
+        description: The trigger date. Always inside the current year to date, by construction.
+        data_tests: [not_null]
+      - name: ea_pgm_ind
+        description: Enhanced-agreement indicator, from the marketer master.
+      - name: mk_cnt_tp_nm
+        description: Contract type in force on the trigger date.
+        data_tests: [not_null]
+
+  - name: int_candidate_cap_score
+    description: >
+      The candidate chain of the CAP query -- producer to EPM case to lead to
+      assessment to contract -- rooted at the producer bridge so it can be run
+      and inspected on its own.
+
+      GRAIN: one row per producer per case per live lead per live assessment.
+      A twice-assessed candidate is two rows here and two rows in the mart. If
+      only the latest assessment should count, that rule belongs in this model.
+    columns:
+      - name: producer_mktr_no
+        description: >
+          The a360 marketer number the chain hangs off, normalised in staging.
+          Never null -- the model drops the rows where it would be.
+        data_tests: [not_null]
+      - name: candidate_id
+        description: >
+          Candidate natural key. Null for a producer whose case has no live
+          lead; those rows exist so the gap can be counted, and the mart's
+          score filter removes them.
+      - name: fit_score_val
+        description: The CAP score as stored. Reported by the mart as cap_score.
+      - name: fit_score_val_num
+        description: The score as a decimal, for the 75 threshold.
+      - name: cap_date
+        description: Assessment completion date, as a date.
+      - name: cap_score_75plus
+        description: >
+          "Y" when the score is 75 or better. A non-numeric score is "N".
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Y', 'N']
+      - name: can_full_nm_protected
+        description: >
+          The candidate's name, still protected. Decrypted only in
+          fct_cap_candidate.
+      - name: pts_date
+        description: >
+          Effective date of the marketer's contract as of the report date. Null
+          when no contract covers it, which is normal for a lapsed marketer.
