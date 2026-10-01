@@ -5,6 +5,9 @@ profile: refresh_trigger_simulation
 model-paths: [models]
 macro-paths: [macros]
 test-paths: [tests]
+analysis-paths: []
+seed-paths: []
+snapshot-paths: []
 target-path: target
 clean-targets: [target, dbt_packages]
 models:

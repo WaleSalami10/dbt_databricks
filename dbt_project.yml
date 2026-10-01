@@ -8,6 +8,9 @@ macro-paths:
 - simulations/refresh_trigger/macros
 test-paths:
 - simulations/refresh_trigger/tests
+analysis-paths: []
+seed-paths: []
+snapshot-paths: []
 target-path: target
 clean-targets:
 - target
