@@ -1,0 +1,13 @@
+name: refresh_trigger_simulation
+version: '1.0.0'
+config-version: 2
+profile: refresh_trigger_simulation
+model-paths: [models]
+macro-paths: [macros]
+test-paths: [tests]
+target-path: target
+clean-targets: [target, dbt_packages]
+models:
+  refresh_trigger_simulation:
+    +materialized: table
+    +tags: [refresh_simulation]

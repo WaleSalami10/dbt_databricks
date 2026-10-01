@@ -1,0 +1,11 @@
+version: 2
+models:
+  - name: refresh_sim_output
+    description: Synthetic payload built only after a completed, unprocessed refresh.
+    columns:
+      - name: row_id
+        data_tests: [not_null, unique]
+      - name: batch_id
+        data_tests: [not_null]
+      - name: cloud_run_id
+        data_tests: [not_null]
