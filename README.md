@@ -73,6 +73,51 @@ it: `ytd_begin_dt`, 1 January of the reporting year. The other end of the YTD
 window is simply the reporting month end, so it is called `month_end_date` like
 everywhere else.
 
+## Orchestration (dbt Cloud)
+
+The pipeline runs only when `metrics_marketplace.rpt_fct_mk_cnt_cmpnt_po_all`
+has been written to since the job last succeeded. That table is updated once a
+month. Everything lives in one dbt Cloud deploy job; there is no external
+scheduler.
+
+| Setting | Value |
+|---|---|
+| Environment | Production (deploy job) |
+| Step 1 | `dbt source freshness --select source:metrics_marketplace` |
+| Step 2 | `dbt build --select "@source_status:fresher"` |
+| Run source freshness (checkbox) | Off. Step 1 replaces it and stays scoped to this source |
+| Advanced settings → Compare changes against | **This job** |
+| Triggers → Run on schedule | Cron `0 */4 * * *` (every 4 hours, every day) |
+
+How it works:
+
+- Step 1 records when the table last changed: the latest Delta commit that
+  wrote data (`loaded_at_query` in `_pdm__sources.yml`). OPTIMIZE and VACUUM
+  commits do not count.
+- **This job** makes dbt Cloud pass the job's last *successful* run as
+  `--state`, so `source_status:fresher` means "written since the last good run".
+- `@` selects the source's descendants **and all of their parents**.
+  `ppg_metrics_dtl` reads the reporting month's partition of
+  `ppg_stg_cnt_prd_mapping`, which nothing else builds, so building only the
+  descendants would read an empty month. When the source is fresher this is the
+  whole pipeline, all four cells; when it is not, nothing is selected and the
+  run ends in seconds with "No nodes selected".
+- A failed build is retried on the next schedule tick automatically, because
+  the comparison point stays at the last successful run.
+- Most runs are no-ops. Every 4 hours caps the delay after the monthly load at
+  4 hours without waking the SQL warehouse every hour. Do not narrow the
+  schedule to the first days of the month: `report_month` defaults to
+  `previous_month`, resolved from the run date, so a late load picked up next
+  month builds the wrong month and the missed one is never built.
+- Step 1 fails the run (and skips the build) if the table is older than
+  `error_after`, or if `DESCRIBE HISTORY` cannot run on it. Both are worth an
+  alert. Attach failure notifications to the job.
+
+**First run:** `source_status` needs a previous `sources.json`, and a new job
+has none (dbt Core errors with "No previous state comparison freshness
+results"). Set step 2 to plain `dbt build`, run the job once, then switch it
+back to the gated command.
+
 ## CTE to model mapping
 
 ### Cell 1 -> `ppg_stg_cnt_prd_mapping`

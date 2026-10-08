@@ -26,7 +26,29 @@ sources:
       - name: rpt_fct_mk_cnt_cmpnt_po_all
         description: >
           Policy-owner fact at end-of-period. dim_po_status_sk in (1,2,3)
-          means an active client.
+          means an active client. Its freshness gates the dbt Cloud job: the
+          pipeline only builds when this table has been written to since the
+          job's last successful run (see README, "Orchestration").
+        config:
+          # "Last updated" = timestamp of the latest Delta commit that changed
+          # data. Not the metadata default: on Unity Catalog that reads
+          # information_schema.tables.last_altered, which only moves on DDL,
+          # so it would never see a load. Table maintenance (OPTIMIZE, VACUUM,
+          # property changes, incl. predictive optimization) is excluded so it
+          # cannot trigger a rebuild on unchanged data.
+          loaded_at_query: |
+            select max(timestamp)
+            from (describe history {{ this }})
+            where operation not in (
+              'OPTIMIZE', 'VACUUM START', 'VACUUM END',
+              'SET TBLPROPERTIES', 'UNSET TBLPROPERTIES', 'UPGRADE PROTOCOL'
+            )
+          # Loaded monthly: warn if the next load is ~5 days late, error if
+          # ~2 weeks late. Only drives alerting; the build gate compares load
+          # times, not these thresholds.
+          freshness:
+            warn_after: {count: 35, period: day}
+            error_after: {count: 45, period: day}
 
   - name: crm
     database: prod_execution_datalake
