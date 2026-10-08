@@ -1,0 +1,61 @@
+version: 2
+
+# Doc block for the FOD (Field Office Development) report's intermediate
+# models, kept separate from _intermediate.yml so the report's files stand on
+# their own.
+
+models:
+
+  - name: int_fod_new_agents
+    description: >
+      The `mk` CTE from the FOD query. Marketers live on the EDH lake
+      dashboard with an application on file on or after 2024-01-01.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null, unique]
+      - name: rcr_no
+        description: The related (recruiting) marketer.
+
+  - name: int_fod_events
+    description: >
+      The `fod_overall_events` CTE from the FOD query. One row per qualifying
+      Salesforce event for an FOD-program marketer -- the grain
+      fct_daily_fod_count aggregates from.
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: rcr_no
+        description: The related (recruiting) marketer.
+      - name: title
+        description: Job title from stg_a360__crm_user.
+      - name: event_id
+        description: >
+          Salesforce event id. NOT unique on its own -- an event can appear
+          more than once if it matches more than one active-status window,
+          though that would be unusual. fct_daily_fod_count counts it DISTINCT
+          per group for exactly this reason.
+        data_tests: [not_null]
+      - name: agent_name
+        description: Agent name on the event.
+      - name: owner
+        description: Event owner display name.
+      - name: case_dev_tool
+        description: >
+          Development tool, always one of 'FOD', 'PRP' or 'IID' -- this model
+          filters on that list.
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['FOD', 'PRP', 'IID']
+      - name: case_fod_occur_desc
+        description: >
+          'Yes'/'No'. Part of fod_count's qualifying condition in
+          fct_daily_fod_count, alongside case_dev_tool = 'FOD' and
+          is_fod_mgr_ownr_ind = 1.
+      - name: is_fod_mgr_ownr_ind
+        description: 1 when the event owner is the FOD manager.
+      - name: event_date
+        description: Event activity date. The report's daily grain.
+        data_tests: [not_null]

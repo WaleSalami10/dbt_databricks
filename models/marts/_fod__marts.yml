@@ -1,0 +1,65 @@
+version: 2
+
+# Doc block for the FOD (Field Office Development) mart.
+
+models:
+
+  - name: fct_daily_fod_count
+    description: >
+      Daily FOD (Field Office Development) count by agent. One row per
+      marketer, recruiter, title, agent, owner and event date, with the count
+      of distinct qualifying events per development tool.
+
+      Replaces the final SELECT of the FOD_query.sql daily count report. The
+      `limit 10` on the original was a testing leftover and is not carried
+      over.
+    config:
+      contract:
+        enforced: false
+    columns:
+      - name: mktr_no
+        description: '{{ doc("mktr_no") }}'
+        data_tests: [not_null]
+      - name: rcr_no
+        description: The related (recruiting) marketer.
+      - name: title
+        description: Job title.
+      - name: agent_name
+        description: Agent name on the event.
+      - name: owner
+        description: Event owner display name.
+      - name: event_date
+        description: The date these counts are bucketed by.
+        data_tests: [not_null]
+      - name: fod_count
+        description: >
+          Distinct events where case_dev_tool = 'FOD', case_fod_occur_desc =
+          'Yes' and is_fod_mgr_ownr_ind = 1.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+      - name: prp_count
+        description: Distinct events where case_dev_tool = 'PRP'.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+      - name: iid_count
+        description: Distinct events where case_dev_tool = 'IID'.
+        data_tests:
+          - not_null
+          - dbt_utils.accepted_range:
+              arguments:
+                min_value: 0
+                inclusive: true
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          description: The report's grain, restated as a test.
+          arguments:
+            combination_of_columns:
+              [mktr_no, rcr_no, title, agent_name, owner, event_date]

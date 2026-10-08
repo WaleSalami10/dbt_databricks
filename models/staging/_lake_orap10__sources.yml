@@ -1,0 +1,47 @@
+version: 2
+
+sources:
+
+  # A DIFFERENT physical schema and catalog from the a360 mart -- the raw EDH
+  # lake feed, not the a360 mart -- and its own column names
+  # (MKTR_ID_NK / REL_MKTR_ID / EDH_RECORD_STATUS_IN), which is why this is its
+  # own source rather than a table under 'a360' or 'a360_fod'.
+  - name: lake_orap10
+    description: >
+      EDH lake feed behind the daily FOD (Field Office Development) count
+      report. Read-only, like every other source in this project.
+    # Templated the same way as the a360 sources: with `use_dummy_data: true`
+    # this also resolves to the a360 dummy schema, since
+    # scripts/load_fod_dummy_data.py loads every stand-in table -- lake and
+    # a360 alike -- into that one schema. Only the catalog and schema move;
+    # table names are untouched.
+    database: "{{ target.database if var('use_dummy_data', false) else 'prod_execution_datalake' }}"
+    schema: "{{ var('dummy_schema', target.schema ~ '_dummy_a360') if var('use_dummy_data', false) else 'lake_oracle_orap10_ai0101' }}"
+
+    tables:
+      - name: mk_dashbrd
+        description: >
+          Marketer dashboard dimension, EDH lake version. Carries EDH's
+          soft-delete flag; stg_lake_orap10__marketer does NOT filter on it --
+          int_fod_new_agents applies the 'A' filter.
+        columns:
+          - name: MKTR_ID_NK
+            description: Marketer natural key. Reported as mktr_no.
+          - name: REL_MKTR_ID
+            description: The related (recruiting) marketer. Reported as rcr_no.
+          - name: EDH_RECORD_STATUS_IN
+            description: EDH record status. 'A' is the live row.
+
+      - name: mk_history
+        description: >
+          Marketer application history, EDH lake version. One row per version;
+          int_fod_new_agents takes the distinct (marketer, original
+          application date) pairs, same as the source query.
+        columns:
+          - name: MKTR_ID_NK
+            description: Marketer natural key. Joins to mk_dashbrd.
+          - name: ORIG_APPL_DT
+            description: >
+              Original application date. int_fod_new_agents keeps only
+              marketers whose value is on or after the FOD program's
+              2024-01-01 inception date.

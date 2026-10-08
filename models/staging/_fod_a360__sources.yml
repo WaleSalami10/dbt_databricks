@@ -1,0 +1,102 @@
+version: 2
+
+sources:
+
+  # Same physical mart as the 'a360' source in _a360__sources.yml -- same
+  # database and schema -- but declared under its OWN source name so the FOD
+  # report's tables can be added without touching that file. dbt does not
+  # allow two source blocks to share a name, so this is 'a360_fod' rather than
+  # a second 'a360' block. orap10_mk_sts_atv is the one table both reports
+  # read; it stays declared once, under 'a360', and stg_a360__marketer_status
+  # is reused as-is -- see int_fod_events.
+  - name: a360_fod
+    description: >
+      Salesforce/CRM tables behind the daily FOD (Field Office Development)
+      count report. Same mart as 'a360', read-only.
+    database: "{{ target.database if var('use_dummy_data', false) else 'prod_execution_rs' }}"
+    schema: "{{ var('dummy_schema', target.schema ~ '_dummy_a360') if var('use_dummy_data', false) else 'ext_agy_a360_mart' }}"
+
+    tables:
+      - name: trf_cs_user
+        description: >
+          Salesforce user / CRM bridge. Ties an a360 marketer number to the
+          Salesforce owner id (acf2id_c) that sf_event is keyed on, and
+          carries the user's title.
+        columns:
+          - name: case_marketer_id_c
+            description: >
+              Marketer number as TEXT. int_fod_new_agents casts it to match
+              the EDH lake dashboard's mktr_no; only rows that are all-digits
+              qualify (a blank or non-numeric value means no marketer match).
+          - name: acf2id_c
+            description: Salesforce owner id. Joins to sf_event.case_ownr_acf2id_id.
+          - name: user_title
+            description: Job title, reported as-is (title on the report).
+
+      - name: sf_event
+        description: >
+          Salesforce case-development events, one row per event. is_deleted_cd
+          is Salesforce's soft-delete flag; stg_a360__sf_event does not filter
+          on it -- int_fod_events does, along with the actvt_dt year window.
+        columns:
+          - name: sale_force_id
+            description: >
+              Event id, the grain of this table. The report counts DISTINCT
+              values of this per (case_dev_tool, qualifying condition).
+          - name: case_ownr_acf2id_id
+            description: Salesforce owner id. Joins to trf_cs_user.acf2id_c.
+          - name: event_ownr_desc
+            description: Event owner display name. Reported as both ownerid and owner.
+          - name: case_agent_nm_desc
+            description: Agent name on the event. Reported as agent_name.
+          - name: case_dev_tool_desc
+            description: >
+              Development tool the event belongs to. int_fod_events keeps
+              only 'FOD', 'PRP' and 'IID'.
+          - name: case_dev_in_prog_desc
+            description: >
+              Development-in-progress key. Joins to
+              sf_case_development_in_progress_c.sale_force_id_nk.
+          - name: case_fod_occur_desc
+            description: >
+              'Yes'/'No' flag on whether an FOD actually occurred. Part of the
+              qualifying condition for fod_count, alongside case_dev_tool =
+              'FOD' and is_fod_mgr_ownr_ind = 1.
+          - name: is_fod_mgr_ownr_ind
+            description: 1 when the event's owner is the FOD manager. See case_fod_occur_desc.
+          - name: actvt_dt
+            description: Event activity date. Reported as event_date, the report's grain.
+          - name: is_deleted_cd
+            description: Salesforce soft-delete flag. 0 is live.
+          - name: last_modify_dt
+            description: Last-modified timestamp. Joins to p_adp_lst_mod_dt_stg.dt.
+
+      - name: sf_case_development_in_progress_c
+        description: >
+          Development-in-progress records. Restricts events to ones with an
+          active FOD/PRP/IID development in progress, and its
+          last_modified_dt anchors the p_adp_lst_mod_dt_dip join.
+        columns:
+          - name: sale_force_id_nk
+            description: Natural key. Joins to sf_event.case_dev_in_prog_desc.
+          - name: last_modified_dt
+            description: Last-modified timestamp. Joins to p_adp_lst_mod_dt_dip.dt.
+
+      - name: p_adp_lst_mod_dt_dip
+        description: >
+          Point-in-time control table: the date each
+          sf_case_development_in_progress_c row was last modified as of the
+          load. Joining on (sale_force_id_nk, dt) keeps only the row's
+          current, as-loaded version.
+        columns:
+          - name: sale_force_id_nk
+          - name: dt
+
+      - name: p_adp_lst_mod_dt_stg
+        description: >
+          Point-in-time control table, the sf_event equivalent of
+          p_adp_lst_mod_dt_dip. Joining on (sale_force_id, dt) keeps only the
+          event's current, as-loaded version.
+        columns:
+          - name: sale_force_id
+          - name: dt
