@@ -30,19 +30,13 @@ sources:
           pipeline only builds when this table has been written to since the
           job's last successful run (see README, "Orchestration").
         config:
-          # "Last updated" = timestamp of the latest Delta commit that changed
-          # data. Not the metadata default: on Unity Catalog that reads
+          # "Last updated" = max(last_updated_timestamp), stamped on the rows
+          # by the load. Not the metadata default: on Unity Catalog that reads
           # information_schema.tables.last_altered, which only moves on DDL,
           # so it would never see a load. Table maintenance (OPTIMIZE, VACUUM,
-          # property changes, incl. predictive optimization) is excluded so it
-          # cannot trigger a rebuild on unchanged data.
-          loaded_at_query: |
-            select max(timestamp)
-            from (describe history {{ this }})
-            where operation not in (
-              'OPTIMIZE', 'VACUUM START', 'VACUUM END',
-              'SET TBLPROPERTIES', 'UNSET TBLPROPERTIES', 'UPGRADE PROTOCOL'
-            )
+          # predictive optimization) and schema changes do not touch the
+          # column, so they cannot trigger a rebuild on unchanged data.
+          loaded_at_field: last_updated_timestamp
           # Loaded monthly: warn if the next load is ~5 days late, error if
           # ~2 weeks late. Only drives alerting; the build gate compares load
           # times, not these thresholds.

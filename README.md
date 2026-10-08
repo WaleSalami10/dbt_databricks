@@ -77,8 +77,8 @@ everywhere else.
 
 The pipeline runs only when `metrics_marketplace.rpt_fct_mk_cnt_cmpnt_po_all`
 has been written to since the job last succeeded. That table is updated once a
-month. Everything lives in one dbt Cloud deploy job; there is no external
-scheduler.
+month, between the 4th and the 10th. Everything lives in one dbt Cloud deploy
+job; there is no external scheduler.
 
 | Setting | Value |
 |---|---|
@@ -87,13 +87,13 @@ scheduler.
 | Step 2 | `dbt build --select "@source_status:fresher"` |
 | Run source freshness (checkbox) | Off. Step 1 replaces it and stays scoped to this source |
 | Advanced settings → Compare changes against | **This job** |
-| Triggers → Run on schedule | Cron `0 */4 * * *` (every 4 hours, every day) |
+| Triggers → Run on schedule | Cron `0 */4 4-11 * *` (every 4 hours, 4th to 11th of the month, UTC) |
 
 How it works:
 
-- Step 1 records when the table last changed: the latest Delta commit that
-  wrote data (`loaded_at_query` in `_pdm__sources.yml`). OPTIMIZE and VACUUM
-  commits do not count.
+- Step 1 records when the table was last loaded: `max(last_updated_timestamp)`
+  (`loaded_at_field` in `_pdm__sources.yml`). OPTIMIZE, VACUUM and schema
+  changes do not touch that column, so they do not count.
 - **This job** makes dbt Cloud pass the job's last *successful* run as
   `--state`, so `source_status:fresher` means "written since the last good run".
 - `@` selects the source's descendants **and all of their parents**.
@@ -104,14 +104,22 @@ How it works:
   run ends in seconds with "No nodes selected".
 - A failed build is retried on the next schedule tick automatically, because
   the comparison point stays at the last successful run.
-- Most runs are no-ops. Every 4 hours caps the delay after the monthly load at
-  4 hours without waking the SQL warehouse every hour. Do not narrow the
-  schedule to the first days of the month: `report_month` defaults to
-  `previous_month`, resolved from the run date, so a late load picked up next
-  month builds the wrong month and the missed one is never built.
+- The job only runs while the load is expected. dbt Cloud reads cron in UTC,
+  so the window runs to the 11th to catch a load late on the 10th in US time.
+  Inside the window most runs are still no-ops; the gate makes the first run
+  after the load the one that builds, at most 4 hours after it lands.
+- A load outside the window is not picked up. If it lands later in the same
+  month, trigger the job with **Run now**: the source is fresher than the last
+  good run, and `report_month` (`previous_month`, resolved from the run date)
+  still points at the right month. The same applies to a build that fails on
+  the last tick (20:00 UTC on the 11th). Do not leave either for next month's
+  window: by then `previous_month` is the following month, so the missed month
+  is never built, and it cannot be backfilled while `pdm_history_mode` is
+  `current`.
 - Step 1 fails the run (and skips the build) if the table is older than
-  `error_after`, or if `DESCRIBE HISTORY` cannot run on it. Both are worth an
-  alert. Attach failure notifications to the job.
+  `error_after`. That includes `last_updated_timestamp` being NULL on every
+  row, which dbt reads as a load in year 1. Both are worth an alert. Attach
+  failure notifications to the job.
 
 **First run:** `source_status` needs a previous `sources.json`, and a new job
 has none. With **This job** selected, dbt Cloud cancels the run before it
