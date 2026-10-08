@@ -114,9 +114,12 @@ How it works:
   alert. Attach failure notifications to the job.
 
 **First run:** `source_status` needs a previous `sources.json`, and a new job
-has none (dbt Core errors with "No previous state comparison freshness
-results"). Set step 2 to plain `dbt build`, run the job once, then switch it
-back to the gated command.
+has none. With **This job** selected, dbt Cloud cancels the run before it
+starts ("This job is configured to use the manifest of another job's previous
+run, which could not be located"). For the first run only, set Compare changes
+against to **No deferral** and step 2 to plain `dbt build`, run the job once,
+then restore both. If the table is already older than `error_after`, step 1
+fails that run as well, so do it after a load.
 
 ## CTE to model mapping
 
